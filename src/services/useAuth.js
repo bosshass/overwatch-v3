@@ -40,6 +40,14 @@ const K = {
 
 const clearStorage = () => Object.values(K).forEach(k => localStorage.removeItem(k));
 
+// Non-hook token access, for services that are not components.
+//
+// Do NOT call useAuth() from a service or a second component to get at the
+// token — it would mount a second renewal interval and two timers would fight
+// over the same key. useAuth is the only writer; everyone else reads.
+export const getAccessToken = () => localStorage.getItem(K.token);
+
+
 export function useAuth() {
   const [token, setToken] = useState(() => localStorage.getItem(K.token));
   const [email, setEmail] = useState(() => localStorage.getItem(K.email));

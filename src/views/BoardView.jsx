@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { LANES, laneOf, hasHold } from '../utils/lanes';
 import { ownerLabel, isUnowned, isMultiTech, techsOn } from '../utils/ownership';
-import { fetchBoard, moveTo } from '../services/jobs';
+import { fetchBoard } from '../services/jobs';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
 
