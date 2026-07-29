@@ -4,6 +4,7 @@ import CommandCenter from './views/CommandCenter';
 import BoardView from './views/BoardView';
 import CustomersView from './views/CustomersView';
 import MyWork from './views/MyWork';
+import CalendarView from './views/CalendarView';
 import NewJobModal from './views/NewJobModal';
 import { VERSION } from './version';
 
@@ -20,6 +21,7 @@ import { VERSION } from './version';
 const ROUTES = [
   { path: '/', label: 'Home' },
   { path: '/board', label: 'Board' },
+  { path: '/calendar', label: 'Calendar' },
   { path: '/my-work', label: 'My work' },
   { path: '/customers', label: 'Customers' },
 ];
@@ -87,6 +89,8 @@ export default function App() {
 
       {path === '/board'
         ? <BoardView key={bump} actor={email} />
+        : path === '/calendar'
+        ? <CalendarView key={bump} actor={email} />
         : path === '/my-work'
         ? <MyWork key={bump} actor={email} />
         : path === '/customers'

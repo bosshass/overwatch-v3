@@ -142,7 +142,16 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   const toggle = t => setPicked(p => {
     const next = { ...p };
     if (next[t.id]) delete next[t.id];
-    else next[t.id] = { hours: defaultHours, day: 1 };
+    else {
+      // Mirror whoever is already picked. A crew going out together almost
+      // always shares the window, so copying the first person's hours and day
+      // is right far more often than re-deriving from the job estimate — and
+      // it is one edit to change if this one differs.
+      const existing = Object.values(p)[0];
+      next[t.id] = existing
+        ? { hours: existing.hours, day: existing.day, startTime: existing.startTime }
+        : { hours: defaultHours, day: 1 };
+    }
     return next;
   });
 
@@ -283,9 +292,11 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
         <div style={S.techHead}>
           <span style={S.labelInline}>Who&apos;s going ({chosen.length})</span>
           <span style={S.estNote}>
-            {hasEstimate
-              ? `${defaultHours}h prefilled from this job's estimate`
-              : `no estimate on this job — defaulting to ${defaultHours}h`}
+            {chosen.length > 0
+              ? 'more techs copy the first one\u2019s window'
+              : hasEstimate
+                ? `${defaultHours}h prefilled from this job\u2019s estimate`
+                : `no estimate on this job \u2014 defaulting to ${defaultHours}h`}
           </span>
         </div>
         <div style={S.techs}>

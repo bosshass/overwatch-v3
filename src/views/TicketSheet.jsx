@@ -78,6 +78,13 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
           <button style={S.x} onClick={onClose}>✕</button>
         </div>
 
+        {/* The work, stated once and loudly, before any field editor. */}
+        <div style={S.issueBox}>
+          {draft.issue
+            ? <div style={S.issueText}>{draft.issue}</div>
+            : <div style={S.issueNone}>No description on this ticket yet</div>}
+        </div>
+
         {draft.customer?.address && <div style={S.addr}>{draft.customer.address}</div>}
         {draft.customer?.phone && (
           <a href={`tel:${draft.customer.phone}`} style={S.phone}>{draft.customer.phone}</a>
@@ -229,6 +236,10 @@ const S = {
   sub: { color: '#64748b', fontSize: 12, marginTop: 2 },
   x: { background: 'transparent', border: 0, color: '#64748b', fontSize: 18, cursor: 'pointer' },
   addr: { color: '#94a3b8', fontSize: 13, marginTop: 8 },
+  issueBox: { background: '#0b1220', borderLeft: '3px solid #3b82f6',
+              borderRadius: '4px 8px 8px 4px', padding: '11px 13px', marginTop: 12 },
+  issueText: { color: '#f1f5f9', fontSize: 15, fontWeight: 600, lineHeight: 1.4 },
+  issueNone: { color: '#64748b', fontSize: 13, fontStyle: 'italic' },
   phone: { color: '#38bdf8', fontSize: 13, textDecoration: 'none', display: 'block', marginTop: 2 },
   laneRow: { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' },
   laneChip: { background: '#1e293b', color: '#cbd5e1', fontSize: 11, fontWeight: 700,

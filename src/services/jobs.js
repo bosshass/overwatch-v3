@@ -246,6 +246,28 @@ export async function fetchMyDay(techId, dayISO) {
   return data || [];
 }
 
+// Everything booked in a date range, all techs. Drives the calendar view.
+// Assignments, not calendar events — one row per tech per day, so a two-tech
+// job shows both people rather than one opaque event.
+export async function fetchScheduleRange(fromISO, toISO) {
+  const { data, error } = await supabase
+    .from('job_assignments')
+    .select(`
+      id, job_id, tech_id, day_number, scheduled_for, estimated_hours,
+      is_complete, calendar_event_id,
+      tech:techs ( id, name, color, email ),
+      job:jobs (
+        id, status, issue, job_type, priority, estimated_hours, scheduled_date,
+        customer:customers ( id, short_code, cs_number, name, address, city, phone )
+      )
+    `)
+    .gte('scheduled_for', fromISO)
+    .lt('scheduled_for', toISO)
+    .order('scheduled_for');
+  if (error) throw error;
+  return data || [];
+}
+
 // ── Notes ────────────────────────────────────────────────────────────────────
 // job_history is the one notes store. A note is a history row that does not
 // change status — from and to are the same, so the feed reads as one thread

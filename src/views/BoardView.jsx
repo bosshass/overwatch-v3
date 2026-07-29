@@ -11,9 +11,34 @@ import FinishSheet from './FinishSheet';
 // lanes.js. A hold renders as a badge on a card that stays in its lane.
 // ============================================================================
 
+// When is this actually happening? scheduled_for on the assignment carries the
+// real start instant; jobs.scheduled_date is a date and has no time in it. Show
+// the timestamp when there is one, the bare date when there is not.
+function whenLabel(job) {
+  const first = (job.assignments || [])
+    .map(a => a.scheduled_for)
+    .filter(Boolean)
+    .sort()[0];
+
+  if (first) {
+    const d = new Date(first);
+    return d.toLocaleString(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    });
+  }
+  if (job.scheduled_date) {
+    return new Date(`${job.scheduled_date}T00:00:00`).toLocaleDateString(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric',
+    }) + ' · no time set';
+  }
+  return null;
+}
+
 function Card({ job, onOpen }) {
   const techs = techsOn(job.assignments);
   const held = hasHold(job);
+  const when = whenLabel(job);
 
   return (
     <div style={S.card} onClick={() => onOpen(job)} role="button">
@@ -23,6 +48,8 @@ function Card({ job, onOpen }) {
         </span>
         {held && <span style={S.hold}>HOLD</span>}
       </div>
+
+      {when && <div style={S.when}>{when}</div>}
 
       {job.issue && job.issue !== 'Test' && <div style={S.issue}>{job.issue}</div>}
 
@@ -149,6 +176,7 @@ const S = {
   customer: { color: '#f1f5f9', fontWeight: 600, fontSize: 13 },
   hold: { background: '#d97706', color: '#1a1200', fontSize: 9, fontWeight: 800,
           padding: '2px 5px', borderRadius: 4, alignSelf: 'flex-start' },
+  when: { color: '#7dd3fc', fontSize: 11, fontWeight: 700, marginTop: 5 },
   issue: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
   meta: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', fontSize: 11 },
   owner: { color: '#38bdf8' },

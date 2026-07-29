@@ -186,7 +186,7 @@ export default function MyWork({ actor }) {
                       )}
                     </div>
                     <div style={S.cust}>{c.name || 'No customer'}</div>
-                    {j.issue && <div style={S.issue}>{j.issue}</div>}
+                    <div style={S.issue}>{j.issue || 'No description'}</div>
                     {c.address && (
                       <div style={S.addr}>
                         {c.address}{c.city ? `, ${c.city}` : ''}
@@ -257,6 +257,10 @@ export default function MyWork({ actor }) {
   );
 }
 
+// "info@drhsecurityservices.com" eats a whole line on a phone. Who wrote it is
+// what matters; the domain is the same for everyone.
+const shortName = who => String(who || 'system').split('@')[0];
+
 // ============================================================================
 // StopSheet — one stop. Call, directions, notes, disposition.
 // ============================================================================
@@ -269,8 +273,17 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
+  // Human notes only. job_history also carries every status move — "Created",
+  // "scheduled → new", "Booked 1 tech for …" — which is audit trail, not
+  // something a tech standing at a door needs to read past. addNote() writes
+  // rows where from_status === to_status, so that is the filter. Nothing is
+  // deleted; the full history is still in job_history for Accounting.
   const reload = useCallback(() => {
-    fetchNotes(job.id).then(setNotes).catch(e => setErr(e.message));
+    fetchNotes(job.id)
+      .then(rows => setNotes(
+        (rows || []).filter(n => n.notes && n.from_status === n.to_status)
+      ))
+      .catch(e => setErr(e.message));
   }, [job.id]);
 
   useEffect(() => { reload(); }, [reload]);
@@ -305,7 +318,21 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
           <button style={T.x} onClick={onClose}>✕</button>
         </div>
 
-        {job.issue && <div style={T.issue}>{job.issue}</div>}
+        {/* The work itself, not a footnote under the customer name. This is the
+            one thing the tech is here to read. */}
+        <div style={T.issueBox}>
+          {job.issue
+            ? <div style={T.issueText}>{job.issue}</div>
+            : <div style={T.issueNone}>No description on this ticket</div>}
+          <div style={T.issueMeta}>
+            {job.job_type && <span>{job.job_type}</span>}
+            {job.priority && job.priority !== 'normal' && (
+              <span style={T.issuePri}>{job.priority}</span>
+            )}
+            {job.due_date && <span>due {job.due_date}</span>}
+          </div>
+        </div>
+
         {fullAddress && <div style={T.addr}>{fullAddress}</div>}
 
         {/* ── The two things needed standing in a driveway ──────────────── */}
@@ -341,18 +368,15 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
 
         <div style={T.feed}>
           {notes.length === 0
-            ? <div style={T.none}>No notes yet.</div>
+            ? <div style={T.none}>No notes on this job yet.</div>
             : notes.map(n => (
                 <div key={n.id} style={T.note}>
+                  <div style={T.noteBody}>{n.notes}</div>
                   <div style={T.noteMeta}>
-                    {n.changed_by || 'system'} ·{' '}
+                    {shortName(n.changed_by)} ·{' '}
                     {new Date(n.changed_at).toLocaleString(undefined,
                       { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                    {n.from_status !== n.to_status && (
-                      <span style={T.moved}>{n.from_status} → {n.to_status}</span>
-                    )}
                   </div>
-                  {n.notes && <div style={T.noteBody}>{n.notes}</div>}
                 </div>
               ))}
         </div>
@@ -412,7 +436,7 @@ const S = {
   pri: { background: '#7f1d1d', color: '#fecaca', fontSize: 9, fontWeight: 800,
          padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase' },
   cust: { color: '#e2e8f0', fontSize: 15, fontWeight: 600, marginTop: 5 },
-  issue: { color: '#94a3b8', fontSize: 12, marginTop: 3, lineHeight: 1.35 },
+  issue: { color: '#cbd5e1', fontSize: 14, fontWeight: 500, marginTop: 4, lineHeight: 1.4 },
   addr: { color: '#64748b', fontSize: 11, marginTop: 4 },
   dayTag: { color: '#64748b', fontSize: 10, marginTop: 3 },
 
@@ -439,8 +463,15 @@ const T = {
   cust: { color: '#f1f5f9', fontSize: 18, fontWeight: 700 },
   code: { color: '#64748b', fontSize: 10, marginRight: 8 },
   x: { background: 'transparent', border: 0, color: '#64748b', fontSize: 18, cursor: 'pointer' },
-  issue: { color: '#cbd5e1', fontSize: 13, marginTop: 8, lineHeight: 1.45 },
-  addr: { color: '#64748b', fontSize: 12, marginTop: 5 },
+  issueBox: { background: '#0b1220', borderLeft: '3px solid #3b82f6',
+              borderRadius: '4px 8px 8px 4px', padding: '12px 14px', marginTop: 12 },
+  issueText: { color: '#f1f5f9', fontSize: 16, fontWeight: 600, lineHeight: 1.4 },
+  issueNone: { color: '#64748b', fontSize: 14, fontStyle: 'italic' },
+  issueMeta: { display: 'flex', gap: 10, marginTop: 8, color: '#64748b', fontSize: 11,
+               flexWrap: 'wrap', alignItems: 'center' },
+  issuePri: { background: '#7f1d1d', color: '#fecaca', fontSize: 9, fontWeight: 800,
+              padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase' },
+  addr: { color: '#64748b', fontSize: 12, marginTop: 10 },
 
   actions: { display: 'flex', gap: 8, marginTop: 14 },
   action: { flex: 1, textAlign: 'center', borderRadius: 10, padding: '13px 8px',
@@ -467,11 +498,9 @@ const T = {
 
   feed: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 },
   none: { color: '#475569', fontSize: 12 },
-  note: { background: '#0b1220', borderRadius: 8, padding: '8px 10px' },
-  noteMeta: { color: '#475569', fontSize: 10, display: 'flex', gap: 7, flexWrap: 'wrap' },
-  moved: { color: '#64748b' },
-  noteBody: { color: '#cbd5e1', fontSize: 13, marginTop: 4, lineHeight: 1.45,
-              whiteSpace: 'pre-wrap' },
+  note: { background: '#0b1220', borderRadius: 8, padding: '9px 11px' },
+  noteMeta: { color: '#475569', fontSize: 10, marginTop: 5 },
+  noteBody: { color: '#e2e8f0', fontSize: 14, lineHeight: 1.45, whiteSpace: 'pre-wrap' },
 
   finish: { width: '100%', marginTop: 22, background: '#14b8a6', color: '#04201d', border: 0,
             borderRadius: 10, padding: '14px', fontSize: 15, fontWeight: 800, cursor: 'pointer' },
