@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- ── Cache-bust bootstrap ──────────────────────────────────────────
+         Runs BEFORE the app bundle. Bump BUILD on any deploy you want to
+         force every client (including installed PWAs) to update. On a
+         change it clears all caches, unregisters service workers, and
+         reloads once — so nobody runs a stale bundle. -->
+    <script>
+      (function () {
+        var BUILD = '2026-06-29-30'; // ← bump this string each deploy to force all clients to refresh
+        try {
+          if (localStorage.getItem('ow_build') === BUILD) return;
+          if (sessionStorage.getItem('ow_busting')) { localStorage.setItem('ow_build', BUILD); return; }
+          sessionStorage.setItem('ow_busting', '1');
+          var finish = function () {
+            localStorage.setItem('ow_build', BUILD);
+            location.reload();
+          };
+          var jobs = [];
+          if (window.caches && caches.keys) {
+            jobs.push(caches.keys().then(function (keys) {
+              return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+            }));
+          }
+          if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+            jobs.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+              return Promise.all(regs.map(function (r) { return r.unregister(); }));
+            }));
+          }
+          Promise.all(jobs).then(finish, finish);
+        } catch (e) { /* never block app load on cache logic */ }
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f1729" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Overwatch</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192x192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet" />
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
