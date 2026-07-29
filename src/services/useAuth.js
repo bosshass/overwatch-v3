@@ -49,23 +49,54 @@ export function useAuth() {
   const isSignedIn = Boolean(token && email);
 
   // ── Sign in ────────────────────────────────────────────────────────────
+  // GIS popup token flow — NOT the implicit redirect flow.
+  //
+  // v9 used response_type=token, which redirects to Google and back. That
+  // requires the exact return URL to be registered as an Authorized redirect
+  // URI, and Google now warns the implicit grant is insecure for SPAs.
+  //
+  // initTokenClient opens a popup instead. Nothing redirects, so there is no
+  // redirect_uri to mismatch — Google validates the page ORIGIN against
+  // Authorized JavaScript origins. One list instead of two, and console edits
+  // to origins take effect immediately rather than propagating for hours.
   const signIn = useCallback(() => {
     if (!CLIENT_ID) {
-      alert('VITE_GOOGLE_CLIENT_ID is not set — check the Vercel env vars.');
+      alert('VITE_GOOGLE_CLIENT_ID is not set — check .env.local / Vercel.');
       return;
     }
-    // Preserve a deep link (/board?job=…) across the round trip so an assign
-    // link lands where it pointed instead of dumping the user on '/'.
-    const here = window.location.pathname + window.location.search;
-    if (here && here !== '/') sessionStorage.setItem('ow_v3_post_login', here);
+    const g = window.google?.accounts?.oauth2;
+    if (!g) {
+      alert('Google sign-in script has not loaded yet. Give it a second and retry.');
+      return;
+    }
 
-    const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    url.searchParams.set('client_id', CLIENT_ID);
-    url.searchParams.set('redirect_uri', window.location.origin);
-    url.searchParams.set('response_type', 'token');
-    url.searchParams.set('scope', SCOPES);
-    url.searchParams.set('prompt', 'select_account');
-    window.location.href = url.toString();
+    const client = g.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      prompt: 'select_account',
+      callback: resp => {
+        if (!resp?.access_token) return;
+        const t = resp.access_token;
+        const lifeMs = (Number(resp.expires_in) || 3600) * 1000;
+
+        fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${t}` },
+        })
+          .then(r => r.json())
+          .then(d => {
+            if (!d.email) throw new Error('Google returned no email');
+            localStorage.setItem(K.token, t);
+            localStorage.setItem(K.email, d.email);
+            localStorage.setItem(K.tokenExpiry, new Date(Date.now() + lifeMs).toISOString());
+            localStorage.setItem(K.session, new Date(Date.now() + 36 * 3600 * 1000).toISOString());
+            setToken(t);
+            setEmail(d.email);
+          })
+          .catch(e => alert(`Sign-in failed: ${e.message}`));
+      },
+    });
+
+    client.requestAccessToken();
   }, []);
 
   const signOut = useCallback(() => {
@@ -75,37 +106,9 @@ export function useAuth() {
     setNeedsReconnect(false);
   }, []);
 
-  // ── Catch the OAuth redirect ───────────────────────────────────────────
-  useEffect(() => {
-    const hash = window.location.hash;
-    if (!hash.includes('access_token')) { setReady(true); return; }
-
-    const params = new URLSearchParams(hash.substring(1));
-    const t = params.get('access_token');
-    const lifeMs = (Number(params.get('expires_in')) || 3600) * 1000;
-    if (!t) { setReady(true); return; }
-
-    fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { Authorization: `Bearer ${t}` },
-    })
-      .then(r => r.json())
-      .then(d => {
-        if (!d.email) throw new Error('Google returned no email');
-        localStorage.setItem(K.token, t);
-        localStorage.setItem(K.email, d.email);
-        localStorage.setItem(K.tokenExpiry, new Date(Date.now() + lifeMs).toISOString());
-        // Session is a separate, longer clock than the token.
-        localStorage.setItem(K.session, new Date(Date.now() + 36 * 3600 * 1000).toISOString());
-        setToken(t);
-        setEmail(d.email);
-
-        const back = sessionStorage.getItem('ow_v3_post_login');
-        sessionStorage.removeItem('ow_v3_post_login');
-        window.history.replaceState({}, '', back || '/');
-      })
-      .catch(() => window.history.replaceState({}, '', '/'))
-      .finally(() => setReady(true));
-  }, []);
+  // No redirect to catch — the popup hands the token straight to the callback.
+  // Kept only to flip `ready` once on mount.
+  useEffect(() => { setReady(true); }, []);
 
   // ── Silent refresh via GIS (no iframe) ─────────────────────────────────
   const clientRef = useRef(null);

@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "lint:quick": "eslint -c eslint.quickcheck.mjs src/",
     "build": "vite build",
-    "verify": "vite build"
+    "verify": "npm run lint:quick && vite build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
@@ -15,6 +16,10 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.21"
+    "vite": "^5.4.21",
+    "@eslint/js": "^9.9.0",
+    "eslint": "^9.9.0",
+    "eslint-plugin-react": "^7.35.0",
+    "globals": "^15.9.0"
   }
 }

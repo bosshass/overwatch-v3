@@ -1,29 +1,26 @@
 import { useEffect, useState, useMemo } from 'react';
-import { LANES, laneOf, hasHold, moveOptions } from '../utils/lanes';
+import { LANES, laneOf, hasHold } from '../utils/lanes';
 import { ownerLabel, isUnowned, isMultiTech, techsOn } from '../utils/ownership';
 import { fetchBoard, moveTo } from '../services/jobs';
+import TicketSheet from './TicketSheet';
+import SchedulerModal from './SchedulerModal';
 
 // ============================================================================
 // BoardView — the six lanes. No second vocabulary; everything comes from
 // lanes.js. A hold renders as a badge on a card that stays in its lane.
 // ============================================================================
 
-function Card({ job, onMove }) {
-  const [open, setOpen] = useState(false);
+function Card({ job, onOpen }) {
   const techs = techsOn(job.assignments);
   const held = hasHold(job);
-  const options = useMemo(
-    () => moveOptions(job, { hasTimeEntry: job.hasTimeEntry }),
-    [job]
-  );
 
   return (
-    <div style={S.card}>
+    <div style={S.card} onClick={() => onOpen(job)} role="button">
       <div style={S.cardTop}>
         <span style={S.customer}>
           {job.customer?.name || job.customer_name || 'No customer'}
         </span>
-        {held && <span style={S.hold} title={`Holding ${job.tentative_date}`}>HOLD</span>}
+        {held && <span style={S.hold}>HOLD</span>}
       </div>
 
       {job.issue && job.issue !== 'Test' && <div style={S.issue}>{job.issue}</div>}
@@ -34,29 +31,11 @@ function Card({ job, onMove }) {
           {isMultiTech(job.assignments) && ` (${techs.length})`}
         </span>
         {job.estimated_hours != null && <span style={S.hours}>{job.estimated_hours}h</span>}
+        {job.priority && job.priority !== 'normal' && (
+          <span style={S.pri}>{job.priority}</span>
+        )}
         {job.due_date && <span style={S.due}>due {job.due_date}</span>}
       </div>
-
-      <button style={S.moveBtn} onClick={() => setOpen(o => !o)}>
-        Move{open ? ' ▴' : ' ▾'}
-      </button>
-
-      {open && (
-        <div style={S.moveList}>
-          {options.map(o => (
-            <button
-              key={o.key}
-              disabled={!o.ok}
-              title={o.ok ? '' : o.reason}
-              style={{ ...S.moveOpt, ...(o.ok ? {} : S.moveOptOff) }}
-              onClick={() => { setOpen(false); onMove(job, o.key); }}
-            >
-              {o.label}
-              {!o.ok && <span style={S.why}>{o.reason}</span>}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -65,6 +44,8 @@ export default function BoardView({ actor }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+  const [openJob, setOpenJob] = useState(null);
+  const [schedJob, setSchedJob] = useState(null);
 
   const load = () =>
     fetchBoard()
@@ -74,11 +55,9 @@ export default function BoardView({ actor }) {
 
   useEffect(() => { load(); }, []);
 
-  const handleMove = async (job, laneKey) => {
-    const res = await moveTo(job, laneKey, { actor });
-    if (!res.ok) { setErr(res.reason); return; }
-    setErr(null);
-    load();
+  const refresh = () => {
+    setLoading(true);
+    fetchBoard().then(setJobs).catch(e => setErr(e.message)).finally(() => setLoading(false));
   };
 
   const byLane = useMemo(() => {
@@ -109,12 +88,31 @@ export default function BoardView({ actor }) {
               {byLane[lane.key].length === 0
                 ? <div style={S.empty}>Nothing here</div>
                 : byLane[lane.key].map(j => (
-                    <Card key={j.id} job={j} onMove={handleMove} />
+                    <Card key={j.id} job={j} onOpen={setOpenJob} />
                   ))}
             </div>
           </div>
         ))}
       </div>
+
+      {openJob && (
+        <TicketSheet
+          job={jobs.find(j => j.id === openJob.id) || openJob}
+          actor={actor}
+          onClose={() => setOpenJob(null)}
+          onChanged={refresh}
+          onSchedule={j => { setOpenJob(null); setSchedJob(j); }}
+        />
+      )}
+
+      {schedJob && (
+        <SchedulerModal
+          job={schedJob}
+          actor={actor}
+          onClose={() => setSchedJob(null)}
+          onBooked={refresh}
+        />
+      )}
     </div>
   );
 }
@@ -145,6 +143,7 @@ const S = {
   unowned: { color: '#f87171' },
   hours: { color: '#94a3b8' },
   due: { color: '#94a3b8' },
+  pri: { color: '#fbbf24', textTransform: 'uppercase', fontWeight: 700 },
   moveBtn: { marginTop: 8, width: '100%', background: '#243350', color: '#cbd5e1',
              border: 0, borderRadius: 6, padding: '6px', fontSize: 12, cursor: 'pointer' },
   moveList: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
