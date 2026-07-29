@@ -1,27 +1,20 @@
 {
-  "name": "juce-v4",
+  "name": "overwatch-v3",
   "private": true,
-  "version": "4.0.0",
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "lint:quick": "eslint -c eslint.quickcheck.mjs src/",
-    "verify": "npm run lint:quick && vite build"
+    "verify": "vite build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
-    "firebase": "^10.7.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.23.0",
-    "xlsx": "^0.18.5"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@eslint/js": "^9.0.0",
     "@vitejs/plugin-react": "^4.3.1",
-    "eslint": "^9.0.0",
-    "vite": "^5.4.2"
+    "vite": "^5.4.21"
   }
 }

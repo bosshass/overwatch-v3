@@ -1,178 +1,218 @@
-// ============================================
-// lanes — the five destinations. One definition. Everywhere.
-// ============================================
-// THE PROBLEM THIS EXISTS TO END
-//   A job's destination was defined in at least four places:
-//     BoardView.COLUMNS      — what the swim lanes are called
-//     BoardView.LANE_MOVES   — what the move buttons are called
-//     MoveStatus.MOVES       — what the ticket panel offers
-//     JobFinishSheet.DISPOS  — what a tech picks in the field
-//   They drifted. The board said "New / Notes", the mover said "Triage", the
-//   field sheet said "Needs estimate", and Tentative existed in one of them.
-//   Same card, four vocabularies, and a destination you could see but not reach.
+// ============================================================================
+// lanes.js — THE vocabulary. Every screen imports from here.
 //
-// Everything that moves a job imports from here. If a label needs changing, it
-// changes once and every screen follows.
+// SPEC DECISIONS BAKED IN (2026-07-28 / 07-29):
+//
+//   1. Six lanes: Open → Needs Action → Scheduled → Returns → Estimates →
+//      Good to Go.
+//
+//   2. TENTATIVE IS NOT A LANE. It is a badge on a card that stays in Open or
+//      Returns. v9 let tentative_date outrank status and yank the card into its
+//      own column. Inverted here — see hasHold().
+//
+//   3. "Bill it" is GOOD TO GO. Nobody in the field decides what gets billed —
+//      the tech says the work is finished, Accounting decides the money.
+//      v9 kept the stored value 'bill_it' to avoid migrating 358 rows. V3
+//      launched empty, so the stored value IS 'good_to_go'.
+//
+//   4. SCHEDULED is scheduler-only. Setting it by hand produced nine "scheduled"
+//      jobs with no date, no tech and no calendar event.
+//
+//   5. STRANDED work folds into Needs Action — scheduled, date passed, no time
+//      entry. That is what the ctx argument to laneOf() is for.
+//
+//   6. ESTIMATES holds only 'sent'. not created -> Needs Action (it's on us);
+//      won -> Needs Action (order parts); lost -> Accounting, to review and
+//      archive against the customer. 'estimate_lost' therefore CANNOT be a
+//      closed status — v9 had it closed AND in the Estimates lane, so Billing
+//      could never see it.
+//
+//   7. Entry gate on Open: cannot ENTER without priority and estimated_hours.
+//      Blocks entry, not exit. In v9 estimated_hours was null on all 400 jobs
+//      and the scheduler silently assumed 4h for every one. due_date warns on
+//      save but never blocks.
+//
+//   8. NON-BILLABLE IS NOT A JOB STATUS. (2026-07-29)
+//      It is a decision made during the billing pass, by the one person doing
+//      billing, looking at hours. It lives on time_entries.billable and is set
+//      only in the Accounting screen. A tech, a scheduler, or anyone not doing
+//      accounting never sees the field and never needs to.
+//      Putting it on the board would print a word on every screen that exactly
+//      one role can act on — the same mistake as v9's [NC] tag.
+//      The job's own exit is 'closed': Accounting is finished with it. Whether
+//      the hours were charged or written off is recorded against the hours.
+//
+//   9. There is no People screen. Not in the mockup, not in v3. It was a 9.16.0
+//      invention that replaced My Tasks and OfficeHub without being asked for.
+//
+// CALENDAR RULE (enforced by callers; stated here because this file defines the
+// destinations that trigger it):
+//   The ONLY write to Google Calendar is MOVING an event to the Completed
+//   calendar when a job is closed. No [BILL IT] / [RETURN] / [IN PROGRESS] /
+//   [ESTIMATE] title tags are ever written again. Legacy parsers stay READ-ONLY.
+// ============================================================================
 
 export const LANES = [
   {
-    key: 'triage',
-    label: 'New / Notes',
-    icon: '📝',
-    color: '#ef4444',
-    // Where a job LANDS when sent here.
-    target: 'new',
-    // Statuses that render in this lane.
-    statuses: ['new', 'needs_details', 'needs_parts', 'pending_materials', 'pending_decision', 'blocked'],
-    // What choosing this means, in the words a person would use.
-    means: 'Not actionable yet — needs info, parts or a decision',
-  },
-  {
-    key: 'ready',
-    label: 'Ready to Schedule',
-    icon: '✅',
+    key: 'open',
+    label: 'Open',
     color: '#22c55e',
     target: 'ready_to_schedule',
-    // return_pending RENDERS in this column (one scheduling queue on the
-    // board) but it is NOT the same thing — see RETURN_LANE below.
-    statuses: ['ready_to_schedule', 'return_pending'],
-    means: 'Good to go — someone needs to put it on a calendar',
+    statuses: ['ready_to_schedule'],
+    means: 'Ready — someone needs to put it on a calendar',
+    allowsHold: true,
+    entryGate: ['priority', 'estimated_hours'],
   },
   {
-    key: 'tentative',
-    label: 'Tentative',
-    icon: '✏️',
-    color: '#f59e0b',
-    // No target status: a hold is an overlay on tentative_date, not a status.
-    // Choosing it opens the scheduler, because a hold needs a date.
-    virtual: 'tentative',
-    needsScheduler: 'hold',
-    statuses: [],
-    means: 'Pencilled in on the Tent calendar — nobody booked yet',
+    key: 'needs_action',
+    label: 'Needs action',
+    color: '#ef4444',
+    target: 'new',
+    statuses: [
+      'new', 'needs_details', 'needs_parts', 'pending_materials',
+      'pending_decision', 'blocked',
+      'needs_estimate',   // not written yet — on us, not the customer
+      'won',              // estimate won — go order parts
+    ],
+    means: 'Somebody has to do something before this can be scheduled',
   },
   {
     key: 'scheduled',
     label: 'Scheduled',
-    icon: '📅',
     color: '#3b82f6',
-    // Also scheduler-only. Marking this by hand is what produced nine
-    // "scheduled" jobs with no date, no tech and no calendar event.
-    needsScheduler: 'book',
     statuses: ['scheduled'],
+    needsScheduler: 'book',
     means: 'A tech is booked and it is on their calendar',
+  },
+  {
+    key: 'returns',
+    label: 'Returns',
+    color: '#d97706',
+    target: 'return_pending',
+    statuses: ['return_pending'],
+    means: 'Work started — needs another trip. Say why.',
+    allowsHold: true,
+    requiresReason: true,
   },
   {
     key: 'estimates',
     label: 'Estimates',
-    icon: '📋',
-    color: '#a855f7',
-    target: 'needs_estimate',
-    statuses: ['needs_estimate', 'estimate_sent', 'won', 'lost'],
-    means: 'Priced work — waiting on a number or on the customer',
+    color: '#8b5cf6',
+    target: 'estimate_sent',
+    statuses: ['estimate_sent'],
+    means: 'Sent — waiting on the customer',
+  },
+  {
+    key: 'good_to_go',
+    label: 'Good to go',
+    color: '#14b8a6',
+    target: 'good_to_go',
+    statuses: ['good_to_go'],
+    means: 'Field work is finished. Accounting takes it from here.',
   },
 ];
 
-// A RETURN is not "ready to schedule." Ready means fresh work waiting for a
-// slot. Return means work STARTED and somebody has to go back — it carries a
-// reason, it feeds return_cards, and treating the two as one erases why the
-// truck is rolling twice. It shares the Ready COLUMN (one scheduling queue)
-// but is its own destination with its own name everywhere else.
-export const RETURN_LANE = {
-  key: 'return',
-  label: 'Return Visit',
-  icon: '🔄',
-  color: '#d97706',
-  target: 'return_pending',
-  statuses: ['return_pending'],
-  means: 'Work started — needs another trip. Say why.',
-};
+export const LANE_KEYS = LANES.map(l => l.key);
+export const laneByKey = k => LANES.find(l => l.key === k) || null;
+export const laneLabel = k => (laneByKey(k)?.label) ?? k;
 
-// Billing is a real destination but lives on its own screen, so it is offered
-// as a move without being a board column.
-export const BILLING_LANE = {
-  key: 'billing',
-  label: 'Done — To Bill',
-  icon: '💵',
-  color: '#22c55e',
-  target: 'to_bill',
-  // 'billed' USED TO LIVE HERE. That was wrong twice over: a paid job rendered
-  // as "Done — To Bill" forever, and because no lane had target:'billed' there
-  // was no way to reach it — the only exits from To Bill were back to a work
-  // lane or Clear, which archives the job and throws away the fact it was
-  // invoiced. Eight jobs with real invoice numbers were stuck like that.
-  statuses: ['complete', 'to_bill'],
-  means: 'Work finished — hours go to Billing to invoice',
-};
+// Off-board, Accounting-only. Never rendered as a lane.
+export const ACCOUNTING_QUEUE = ['estimate_lost'];
 
-// Invoiced and closed. The end of the line, and now actually reachable.
-export const BILLED_LANE = {
-  key: 'billed',
-  label: 'Billed',
-  icon: '💰',
-  color: '#6b7280',
-  target: 'billed',
-  statuses: ['billed'],
-  means: 'Invoiced — nothing further owed on it',
-};
+// Genuinely finished. 'closed' means Accounting is done with it — NOT that
+// money changed hands. That question lives on time_entries.billable.
+export const CLOSED_STATUSES = ['closed', 'archived', 'dead'];
 
-// Leaves the active board without touching money. For test rows and dupes.
-export const CLEAR_LANE = {
-  key: 'clear',
-  label: 'Clear (not billable)',
-  icon: '🗑️',
-  color: '#94a3b8',
-  target: 'archived',
-  statuses: ['archived', 'dead'],
-  means: 'Not real work — remove it without billing anything',
-};
+export const isClosed = status => CLOSED_STATUSES.includes(status);
+export const isOpenWork = status => !isClosed(status);
 
-export const ALL_LANES = [...LANES, RETURN_LANE, BILLING_LANE, BILLED_LANE, CLEAR_LANE];
-
-const STATUS_TO_LANE = {};
-// Order matters: RETURN_LANE registers LAST so return_pending resolves to
-// Return (its identity), not Ready (the column it happens to render in).
-[...LANES, BILLING_LANE, BILLED_LANE, CLEAR_LANE, RETURN_LANE]
-  .forEach(l => l.statuses.forEach(s => { STATUS_TO_LANE[s] = l; }));
-
-// Which lane a job is currently sitting in. A tentative hold wins over the
-// underlying status, because that is what the board shows.
-// A hold is a PENCIL MARK ON OPEN WORK. It was outranking every status except
-// 'scheduled', so a job that got held, worked and marked To Bill stayed in the
-// Tentative column with a "To Bill" chip on it — the board showing a plan for
-// work that was already finished. A hold can only win while the job is still
-// open; once it reaches a settled status the hold is history, not a location.
-const SETTLED = ['complete', 'to_bill', 'billed', 'won', 'lost', 'dead', 'archived'];
-export const isSettled = (job) => SETTLED.includes(job?.status);
-
-export function laneOf(job) {
+// ── laneOf ───────────────────────────────────────────────────────────────────
+// ctx optional: { hasTimeEntry: bool, today: Date }
+export function laneOf(job, ctx) {
   if (!job) return null;
-  if (job.tentative_date && job.status !== 'scheduled' && !isSettled(job)) {
-    return LANES.find(l => l.key === 'tentative');
+  const status = job.status;
+
+  if (isClosed(status) || ACCOUNTING_QUEUE.includes(status)) return null;
+
+  if (status === 'scheduled' && ctx) {
+    const when = job.scheduled_date ? new Date(job.scheduled_date) : null;
+    const today = ctx.today || new Date();
+    if (when && when < today && !ctx.hasTimeEntry) return 'needs_action';
   }
-  return STATUS_TO_LANE[job.status] || null;
+
+  const lane = LANES.find(l => l.statuses.includes(status));
+  return lane ? lane.key : 'needs_action';   // unknown status = someone look at it
 }
 
-// The board used to inline this test twice to build its columns, which is how
-// the rule and the lane could disagree. Ask laneOf; don't re-derive it.
-export const isHeld = (job) => laneOf(job)?.key === 'tentative';
+export const hasHold = job => Boolean(job?.tentative_date);
 
-export const laneLabel = (job) => laneOf(job)?.label || job?.status || 'Unknown';
-export const laneColor = (job) => laneOf(job)?.color || '#64748b';
+// ── Gates ────────────────────────────────────────────────────────────────────
+export function gateFailures(job, targetLaneKey) {
+  const lane = laneByKey(targetLaneKey);
+  if (!lane?.entryGate) return [];
+  return lane.entryGate.filter(f => {
+    const v = job?.[f];
+    return v === null || v === undefined || v === '';
+  });
+}
 
-// The moves offered from where a job is now — every lane except its own.
-// Deliberately NOT a restrictive transition table: the old one had five
-// statuses with no exits at all, so those tickets could not be moved.
-export function movesFor(job, { includeBilling = true, includeClear = true } = {}) {
-  const here = laneOf(job)?.key;
-  // Billed is only a sensible destination for work that is actually finished.
-  // Offering it on a job nobody has done yet invites marking unworked jobs paid.
-  const finished = ['complete', 'to_bill', 'billed'].includes(job?.status);
-  return [
-    ...LANES.slice(0, 2),        // New/Notes, Ready
-    RETURN_LANE,                 // its own destination, right after Ready
-    ...LANES.slice(2),           // Tentative, Scheduled, Estimates
-    ...(includeBilling ? [BILLING_LANE] : []),
-    ...(includeBilling && finished ? [BILLED_LANE] : []),
-    ...(includeClear ? [CLEAR_LANE] : []),
-  ].filter(l => l.key !== here);
+export function softWarnings(job) {
+  const w = [];
+  if (!job?.due_date) w.push('due_date');
+  return w;
+}
+
+export function canMoveTo(job, targetLaneKey) {
+  const lane = laneByKey(targetLaneKey);
+  if (!lane) return { ok: false, reason: 'Unknown lane' };
+
+  if (lane.needsScheduler) {
+    return {
+      ok: false,
+      reason: 'Book it through the scheduler — Scheduled cannot be set by hand',
+    };
+  }
+
+  const missing = gateFailures(job, targetLaneKey);
+  if (missing.length) {
+    return {
+      ok: false,
+      reason: `Needs ${missing.join(' and ')} before it can go to ${lane.label}`,
+      missing,
+    };
+  }
+  return { ok: true, target: lane.target };
+}
+
+export function moveOptions(job, ctx) {
+  const current = laneOf(job, ctx);
+  return LANES
+    .filter(l => l.key !== current && !l.needsScheduler)
+    .map(l => ({ key: l.key, label: l.label, target: l.target, ...canMoveTo(job, l.key) }));
+}
+
+// ── Accounting ───────────────────────────────────────────────────────────────
+// The ONLY place billable / non-billable is decided. Field surfaces must not
+// import anything below this line.
+export const NON_BILLABLE_REASONS = [
+  'Warranty',
+  'Callback — our error',
+  'Sales call',
+  'Goodwill',
+  'Absorbed cost',
+  'Contract / included',
+];
+
+// A job may close once every time entry is resolved — billed, or written off
+// with a reason. Nothing sits in limbo.
+export function canClose(timeEntries = []) {
+  const unresolved = timeEntries.filter(
+    t => !t.archived && !t.billed && t.billable !== false
+  );
+  if (unresolved.length === 0) return { ok: true };
+  return {
+    ok: false,
+    unresolved: unresolved.length,
+    reason: `${unresolved.length} time ${unresolved.length === 1 ? 'entry is' : 'entries are'} still unresolved`,
+  };
 }
