@@ -3,6 +3,7 @@ import { useAuth } from './services/useAuth';
 import CommandCenter from './views/CommandCenter';
 import BoardView from './views/BoardView';
 import CustomersView from './views/CustomersView';
+import MyWork from './views/MyWork';
 import NewJobModal from './views/NewJobModal';
 import { VERSION } from './version';
 
@@ -19,6 +20,7 @@ import { VERSION } from './version';
 const ROUTES = [
   { path: '/', label: 'Home' },
   { path: '/board', label: 'Board' },
+  { path: '/my-work', label: 'My work' },
   { path: '/customers', label: 'Customers' },
 ];
 
@@ -85,6 +87,8 @@ export default function App() {
 
       {path === '/board'
         ? <BoardView key={bump} actor={email} />
+        : path === '/my-work'
+        ? <MyWork key={bump} actor={email} />
         : path === '/customers'
         ? <CustomersView key={bump} onNewJob={c => setNewJob({ customer: c })} />
         : <CommandCenter key={bump} email={email} onNavigate={navigate} />}

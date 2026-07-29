@@ -17,7 +17,7 @@ import { supabase } from '../services/supabaseClient';
 
 const PRIORITIES = ['low', 'normal', 'high', 'emergency'];
 
-export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule }) {
+export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule, onFinish }) {
   const [draft, setDraft] = useState(job);
   const [entries, setEntries] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -174,9 +174,16 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
             </div>
           )}
 
-        <button style={S.schedule} onClick={() => onSchedule(draft)}>
-          {techs.length ? 'Reschedule' : 'Schedule this'}
-        </button>
+        <div style={S.actionRow}>
+          <button style={S.schedule} onClick={() => onSchedule(draft)}>
+            {techs.length ? 'Reschedule' : 'Schedule this'}
+          </button>
+          {techs.length > 0 && onFinish && (
+            <button style={S.finish} onClick={() => onFinish(draft)}>
+              Finish — log hours
+            </button>
+          )}
+        </div>
 
         {/* ── Time ────────────────────────────────────────────────────── */}
         <div style={S.sectionHead}>Time logged</div>
@@ -262,6 +269,10 @@ const S = {
   multi: { color: '#38bdf8', fontSize: 12, marginTop: 4 },
   schedule: { width: '100%', marginTop: 12, background: '#3b82f6', color: '#fff', border: 0,
               borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
+  actionRow: { display: 'flex', flexDirection: 'column', gap: 8 },
+  finish: { width: '100%', background: '#14b8a6', color: '#04201d', border: 0,
+            borderRadius: 8, padding: '11px', fontSize: 14, fontWeight: 800,
+            cursor: 'pointer' },
   entry: { display: 'flex', gap: 10, alignItems: 'center', fontSize: 13, color: '#cbd5e1',
            padding: '5px 0' },
   entryHrs: { color: '#94a3b8', marginLeft: 'auto' },

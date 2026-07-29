@@ -1,9 +1,10 @@
 // ============================================================================
 // calendars.js — V3 TEST CALENDARS
 //
-// CALENDAR RULE (see lanes.js): the ONLY write Overwatch makes to Google
-// Calendar is MOVING an event to COMPLETED when a job reaches billed or is
-// cleared. No title tags are ever written. Legacy tag parsers are read-only.
+// CALENDAR RULE — REVISED 3.1.0 (see lanes.js): booking CREATES an event on the
+// calendar returned by calendarForBooking(), and rebooking deletes the previous
+// event before writing the new one. No title tags are ever written — titles are
+// "<Customer> — <what>". Legacy tag parsers stay read-only.
 //
 // ⚠️  MULTI_TECH below is a LIVE DRH CALENDAR. In v9's config it is SUBS.
 //     Anything v3 books against it lands on a calendar the real business uses.

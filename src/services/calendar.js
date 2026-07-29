@@ -140,3 +140,80 @@ export function weekStart(d = new Date()) {
   x.setHours(0, 0, 0, 0);
   return x;
 }
+
+// ============================================================================
+// WRITES — added 3.1.0.
+//
+// This reverses the original v3 rule ("the only write is move-to-Completed").
+// The reason that rule existed was risk of scribbling on live DRH calendars;
+// with test calendars in place, a booking that does not appear on a calendar is
+// worse — it means the board and the calendar disagree, which is the exact
+// condition that produced v9's ghost bookings.
+//
+// Title convention: "<Customer> — <what>". NO bracket tags. v9's [BILL IT] /
+// [RETURN] / [IN PROGRESS] tags are still never written; legacy parsers that
+// read them stay read-only. Tentative holds keep Shana's "Holding <customer>"
+// via holdTitle() in config/calendars.js.
+// ============================================================================
+
+function eventBody({ title, description, startISO, endISO, location }) {
+  return {
+    summary: title,
+    description: description || '',
+    location: location || '',
+    start: { dateTime: startISO },
+    end: { dateTime: endISO },
+  };
+}
+
+export async function createEvent(calendarId, ev) {
+  const token = getAccessToken();
+  if (!token) return { ok: false, authExpired: true, reason: 'Not signed in' };
+
+  const res = await fetch(`${API}/${encodeURIComponent(calendarId)}/events`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(eventBody(ev)),
+  });
+
+  if (res.status === 401) return { ok: false, authExpired: true, reason: 'Google session expired' };
+  if (!res.ok) return { ok: false, reason: `Calendar ${res.status} ${res.statusText}` };
+
+  const data = await res.json();
+  return { ok: true, eventId: data.id, htmlLink: data.htmlLink };
+}
+
+export async function updateEvent(calendarId, eventId, ev) {
+  const token = getAccessToken();
+  if (!token) return { ok: false, authExpired: true, reason: 'Not signed in' };
+
+  const res = await fetch(
+    `${API}/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(eventBody(ev)),
+    }
+  );
+
+  if (res.status === 401) return { ok: false, authExpired: true, reason: 'Google session expired' };
+  if (res.status === 404) return { ok: false, gone: true, reason: 'Event no longer exists' };
+  if (!res.ok) return { ok: false, reason: `Calendar ${res.status} ${res.statusText}` };
+  return { ok: true, eventId };
+}
+
+// Deleting an already-deleted event is success, not failure — 404 and 410 both
+// mean "it is not there", which is the state we wanted.
+export async function deleteEvent(calendarId, eventId) {
+  const token = getAccessToken();
+  if (!token) return { ok: false, authExpired: true, reason: 'Not signed in' };
+
+  const res = await fetch(
+    `${API}/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  if (res.status === 401) return { ok: false, authExpired: true, reason: 'Google session expired' };
+  if (res.ok || res.status === 404 || res.status === 410) return { ok: true };
+  return { ok: false, reason: `Calendar ${res.status} ${res.statusText}` };
+}

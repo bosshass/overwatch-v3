@@ -45,11 +45,15 @@
 //   9. There is no People screen. Not in the mockup, not in v3. It was a 9.16.0
 //      invention that replaced My Tasks and OfficeHub without being asked for.
 //
-// CALENDAR RULE (enforced by callers; stated here because this file defines the
-// destinations that trigger it):
-//   The ONLY write to Google Calendar is MOVING an event to the Completed
-//   calendar when a job is closed. No [BILL IT] / [RETURN] / [IN PROGRESS] /
-//   [ESTIMATE] title tags are ever written again. Legacy parsers stay READ-ONLY.
+// CALENDAR RULE — REVISED 3.1.0:
+//   Booking CREATES a calendar event, and rebooking removes the old one first.
+//   The earlier rule ("the only write is move-to-Completed") was written when
+//   the risk was v3 scribbling on live DRH calendars. With test calendars in
+//   place the worse failure is a booking that exists on the board and not on
+//   anyone's calendar — that disagreement is what produced v9's ghost bookings.
+//   Still true: no [BILL IT] / [RETURN] / [IN PROGRESS] / [ESTIMATE] title tags
+//   are ever written. Titles are "<Customer> — <what>". Legacy tag parsers stay
+//   READ-ONLY. Tentative holds keep "Holding <customer>" verbatim.
 // ============================================================================
 
 export const LANES = [

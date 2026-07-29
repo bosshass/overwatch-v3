@@ -15,6 +15,12 @@ import { fetchEvents, byDay, dayRange, weekStart } from '../services/calendar';
 // you picked a day with no idea who was already out. Two weeks of real Google
 // events; click a day to select it.
 //
+// 3.0.3: a booking has a TIME FRAME, not just a day. One start time for the
+// crew, per-tech hours, and the end time is derived and shown. Editing the end
+// back-computes the hours, so either end of the window is the handle. The start
+// lands in job_assignments.scheduled_for as a real timestamp — it used to write
+// a bare date, which flattened every booking to midnight.
+//
 // Multi-tech is the default shape here, not a special mode. You pick people,
 // plural. One person is just the common case of that.
 //
@@ -28,6 +34,38 @@ import { fetchEvents, byDay, dayRange, weekStart } from '../services/calendar';
 
 const DAYS_SHOWN = 14;
 
+// ── Time helpers ────────────────────────────────────────────────────────────
+// Minutes since midnight ↔ "HH:MM". Kept as strings because that is what
+// <input type="time"> speaks.
+const toMin = t => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t || '');
+  return m ? Number(m[1]) * 60 + Number(m[2]) : 8 * 60;
+};
+
+const toHHMM = mins => {
+  const m = ((Math.round(mins) % 1440) + 1440) % 1440;
+  const p = n => String(n).padStart(2, '0');
+  return `${p(Math.floor(m / 60))}:${p(m % 60)}`;
+};
+
+const endFrom = (start, hours) => toHHMM(toMin(start) + (Number(hours) || 0) * 60);
+
+// Hours implied by a start/end pair. An end at or before the start means the
+// window ran past midnight — treat it as next-day rather than negative hours.
+const hoursBetween = (start, end) => {
+  let d = toMin(end) - toMin(start);
+  if (d <= 0) d += 1440;
+  return Math.round((d / 60) * 100) / 100;
+};
+
+const pretty = t => {
+  const mins = toMin(t);
+  const h24 = Math.floor(mins / 60);
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const p = n => String(n).padStart(2, '0');
+  return `${h12}:${p(mins % 60)} ${h24 < 12 ? 'AM' : 'PM'}`;
+};
+
 const CAL_LABEL = {
   [CALENDARS.TECH_SCHEDULED]: 'Tech calendar',
   [CALENDARS.MULTI_TECH]: 'Multi-tech calendar',
@@ -37,6 +75,7 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   const [techs, setTechs] = useState([]);
   const [picked, setPicked] = useState({});     // { tech_id: { hours, day } }
   const [date, setDate] = useState(job.scheduled_date || '');
+  const [startTime, setStartTime] = useState('08:00');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -49,6 +88,10 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   const [calError, setCalError] = useState(null);
   const [authExpired, setAuthExpired] = useState(false);
 
+  // The job's own estimate is the default for every tech. Never a silent 4h.
+  const defaultHours = job.estimated_hours ?? 2;
+  const hasEstimate = job.estimated_hours != null;
+
   useEffect(() => {
     supabase.from('techs').select('*').eq('is_active', true)
       .order('display_order')
@@ -60,7 +103,7 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
     const pre = {};
     for (const a of job.assignments || []) {
       if (a.tech_id) pre[a.tech_id] = {
-        hours: a.estimated_hours ?? job.estimated_hours ?? 2,
+        hours: a.estimated_hours ?? defaultHours,
         day: a.day_number || 1,
       };
     }
@@ -99,7 +142,7 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   const toggle = t => setPicked(p => {
     const next = { ...p };
     if (next[t.id]) delete next[t.id];
-    else next[t.id] = { hours: job.estimated_hours ?? 2, day: 1 };
+    else next[t.id] = { hours: defaultHours, day: 1 };
     return next;
   });
 
@@ -116,14 +159,23 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
     const res = await book(job, {
       techs: chosen.map(id => ({
         id,
+        name: techs.find(t => t.id === id)?.name || null,
         hours: Number(picked[id].hours) || null,
         day: Number(picked[id].day) || 1,
       })),
       date,
+      startTime,
       actor,
     });
     setBusy(false);
     if (!res.ok) { setErr(res.reason); return; }
+    // The booking saved. If the calendar write failed, say so and stay open —
+    // closing silently would leave the board and the calendar disagreeing.
+    if (res.calWarning) {
+      setErr(`Booked, but the calendar did not update — ${res.calWarning}`);
+      onBooked?.();
+      return;
+    }
     onBooked?.();
     onClose?.();
   };
@@ -215,11 +267,27 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
           even though it never bills.
         </div>
 
-        <label style={S.label}>Date</label>
-        <input type="date" style={S.input} value={date}
-               onChange={e => setDate(e.target.value)} />
+        <div style={S.row}>
+          <div style={S.col}>
+            <label style={S.label}>Date</label>
+            <input type="date" style={S.input} value={date}
+                   onChange={e => setDate(e.target.value)} />
+          </div>
+          <div style={S.col}>
+            <label style={S.label}>Crew start</label>
+            <input type="time" step="900" style={S.input} value={startTime}
+                   onChange={e => setStartTime(e.target.value)} />
+          </div>
+        </div>
 
-        <label style={S.label}>Who&apos;s going ({chosen.length})</label>
+        <div style={S.techHead}>
+          <span style={S.labelInline}>Who&apos;s going ({chosen.length})</span>
+          <span style={S.estNote}>
+            {hasEstimate
+              ? `${defaultHours}h prefilled from this job's estimate`
+              : `no estimate on this job — defaulting to ${defaultHours}h`}
+          </span>
+        </div>
         <div style={S.techs}>
           {techs.map(t => {
             const on = Boolean(picked[t.id]);
@@ -237,10 +305,26 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
                     <input type="number" step="0.5" min="0" style={S.miniInput}
                            value={picked[t.id].hours ?? ''}
                            onChange={e => setField(t.id, 'hours', e.target.value)} />
+
+                    <span style={S.mini}>ends</span>
+                    <input type="time" step="900" style={S.timeInput}
+                           value={endFrom(picked[t.id].startTime || startTime,
+                                          picked[t.id].hours)}
+                           onChange={e => setField(
+                             t.id, 'hours',
+                             hoursBetween(picked[t.id].startTime || startTime,
+                                          e.target.value))} />
+
                     <span style={S.mini}>day</span>
                     <input type="number" min="1" style={S.miniInput}
                            value={picked[t.id].day ?? 1}
                            onChange={e => setField(t.id, 'day', e.target.value)} />
+
+                    <span style={S.window}>
+                      {pretty(picked[t.id].startTime || startTime)} –{' '}
+                      {pretty(endFrom(picked[t.id].startTime || startTime,
+                                      picked[t.id].hours))}
+                    </span>
                   </div>
                 )}
               </div>
@@ -252,7 +336,9 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
           <div style={S.summary}>
             {chosen.length} tech{chosen.length > 1 ? 's' : ''} · {totalHours}h total
             {dayCount.size > 1 && ` · ${dayCount.size} days`}
-            <div style={S.cal}>→ {destination}</div>
+            <div style={S.cal}>
+              starts {pretty(startTime)} · → {destination}
+            </div>
           </div>
         )}
 
@@ -268,9 +354,9 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
         </button>
 
         <div style={S.note}>
-          Booking is the only way into Scheduled. The grid above is read-only —
-          nothing writes to Google yet. Assignments are recorded in the
-          database only.
+          Booking is the only way into Scheduled. Booking now creates the
+          calendar event — one tech goes to the Tech calendar, more than one to
+          Multi-tech. Rebooking removes the old event first.
         </div>
       </div>
     </div>
@@ -331,7 +417,16 @@ const S = {
   dot: { width: 9, height: 9, borderRadius: 5, flexShrink: 0 },
   techName: { color: '#e2e8f0', fontSize: 14, flex: 1, textAlign: 'left' },
   check: { color: '#3b82f6', fontWeight: 800 },
-  techFields: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px 10px' },
+  row: { display: 'flex', gap: 10 },
+  col: { flex: 1 },
+  techHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+              marginTop: 18, marginBottom: 6, gap: 10, flexWrap: 'wrap' },
+  estNote: { color: '#475569', fontSize: 10 },
+  techFields: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px 10px',
+                flexWrap: 'wrap' },
+  timeInput: { width: 104, background: '#111c2e', color: '#e2e8f0',
+               border: '1px solid #1e293b', borderRadius: 6, padding: '4px 7px', fontSize: 13 },
+  window: { color: '#64748b', fontSize: 11, marginLeft: 'auto' },
   mini: { color: '#64748b', fontSize: 11 },
   miniInput: { width: 58, background: '#111c2e', color: '#e2e8f0', border: '1px solid #1e293b',
                borderRadius: 6, padding: '4px 7px', fontSize: 13 },

@@ -4,6 +4,7 @@ import { ownerLabel, isUnowned, isMultiTech, techsOn } from '../utils/ownership'
 import { fetchBoard } from '../services/jobs';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
+import FinishSheet from './FinishSheet';
 
 // ============================================================================
 // BoardView — the six lanes. No second vocabulary; everything comes from
@@ -46,6 +47,7 @@ export default function BoardView({ actor }) {
   const [err, setErr] = useState(null);
   const [openJob, setOpenJob] = useState(null);
   const [schedJob, setSchedJob] = useState(null);
+  const [finishJob, setFinishJob] = useState(null);
 
   const load = () =>
     fetchBoard()
@@ -102,6 +104,7 @@ export default function BoardView({ actor }) {
           onClose={() => setOpenJob(null)}
           onChanged={refresh}
           onSchedule={j => { setOpenJob(null); setSchedJob(j); }}
+          onFinish={j => { setOpenJob(null); setFinishJob(j); }}
         />
       )}
 
@@ -111,6 +114,15 @@ export default function BoardView({ actor }) {
           actor={actor}
           onClose={() => setSchedJob(null)}
           onBooked={refresh}
+        />
+      )}
+
+      {finishJob && (
+        <FinishSheet
+          job={finishJob}
+          actor={actor}
+          onClose={() => setFinishJob(null)}
+          onFinished={refresh}
         />
       )}
     </div>
