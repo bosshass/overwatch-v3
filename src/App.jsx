@@ -5,6 +5,7 @@ import BoardView from './views/BoardView';
 import CustomersView from './views/CustomersView';
 import MyWork from './views/MyWork';
 import CalendarView from './views/CalendarView';
+import BillingView from './views/BillingView';
 import NewJobModal from './views/NewJobModal';
 import { VERSION } from './version';
 
@@ -22,6 +23,7 @@ const ROUTES = [
   { path: '/', label: 'Home' },
   { path: '/board', label: 'Board' },
   { path: '/calendar', label: 'Calendar' },
+  { path: '/billing', label: 'Billing' },
   { path: '/my-work', label: 'My work' },
   { path: '/customers', label: 'Customers' },
 ];
@@ -91,6 +93,8 @@ export default function App() {
         ? <BoardView key={bump} actor={email} />
         : path === '/calendar'
         ? <CalendarView key={bump} actor={email} />
+        : path === '/billing'
+        ? <BillingView key={bump} actor={email} />
         : path === '/my-work'
         ? <MyWork key={bump} actor={email} />
         : path === '/customers'

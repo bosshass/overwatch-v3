@@ -33,8 +33,6 @@ export default function MyWork({ actor }) {
   const [day, setDay] = useState(() => localDay(new Date()));
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState('');
-  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
   const [openStop, setOpenStop] = useState(null);

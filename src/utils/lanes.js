@@ -106,14 +106,9 @@ export const LANES = [
     statuses: ['estimate_sent'],
     means: 'Sent — waiting on the customer',
   },
-  {
-    key: 'good_to_go',
-    label: 'Good to go',
-    color: '#14b8a6',
-    target: 'good_to_go',
-    statuses: ['good_to_go'],
-    means: 'Field work is finished. Accounting takes it from here.',
-  },
+  // good_to_go is NOT a board lane — it is the billing queue.
+  // Jobs reaching this status leave the board and appear in the Billing tab.
+  // They are fetchable and closeable from there; the board never renders them.
 ];
 
 export const LANE_KEYS = LANES.map(l => l.key);
@@ -121,7 +116,8 @@ export const laneByKey = k => LANES.find(l => l.key === k) || null;
 export const laneLabel = k => (laneByKey(k)?.label) ?? k;
 
 // Off-board, Accounting-only. Never rendered as a lane.
-export const ACCOUNTING_QUEUE = ['estimate_lost'];
+// good_to_go is the billing queue — off the board, visible in the Billing tab.
+export const ACCOUNTING_QUEUE = ['estimate_lost', 'good_to_go'];
 
 // Genuinely finished. 'closed' means Accounting is done with it — NOT that
 // money changed hands. That question lives on time_entries.billable.
@@ -166,7 +162,12 @@ export function softWarnings(job) {
   return w;
 }
 
-export function canMoveTo(job, targetLaneKey) {
+export function canMoveTo(job, targetLaneKey, ctx = {}) {
+  // good_to_go requires at least one time entry with hours. The field team
+  // must log time before a job leaves the board — no hours means no visit.
+  if (targetLaneKey === 'good_to_go' && !ctx.hasTimeEntry) {
+    return { ok: false, reason: 'Log hours before marking Good to go — no time entries found.' };
+  }
   const lane = laneByKey(targetLaneKey);
   if (!lane) return { ok: false, reason: 'Unknown lane' };
 
@@ -190,9 +191,21 @@ export function canMoveTo(job, targetLaneKey) {
 
 export function moveOptions(job, ctx) {
   const current = laneOf(job, ctx);
-  return LANES
+  const opts = LANES
     .filter(l => l.key !== current && !l.needsScheduler)
-    .map(l => ({ key: l.key, label: l.label, target: l.target, ...canMoveTo(job, l.key) }));
+    .map(l => ({ key: l.key, label: l.label, target: l.target, ...canMoveTo(job, l.key, ctx) }));
+
+  // good_to_go is not a LANE but IS a valid move target — always offer it,
+  // gated on hasTimeEntry. This is the only path to the Billing tab.
+  if (current !== 'good_to_go') {
+    opts.push({
+      key: 'good_to_go',
+      label: 'Good to go',
+      target: 'good_to_go',
+      ...canMoveTo(job, 'good_to_go', ctx),
+    });
+  }
+  return opts;
 }
 
 // ── Accounting ───────────────────────────────────────────────────────────────
