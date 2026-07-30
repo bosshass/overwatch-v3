@@ -13,16 +13,7 @@ import { fetchBoard } from '../services/jobs';
 //     Home counted with its own logic.
 //   - No blame-coded language next to a person's name (9.11.11). "Nobody on it"
 //     describes the job, not the human.
-//
-// 3.5.1 adds aging. This is the "estimate sat five days and nobody looked"
-// problem, and it is deliberately measured from created_at — the age of the
-// work, not the last time someone touched the row. Last-touch would need a
-// join on job_history and would read as fresh every time someone opened the
-// ticket and changed nothing. Age is the number that embarrasses correctly.
 // ============================================================================
-
-const DAY = 86400000;
-const ageDays = j => (j.created_at ? Math.floor((Date.now() - new Date(j.created_at)) / DAY) : 0);
 
 function Tile({ label, count, color, sub, onClick, urgent }) {
   return (
@@ -58,24 +49,7 @@ export default function CommandCenter({ email, onNavigate }) {
       if (isUnowned(j.assignments)) unowned++;
       if (hasHold(j)) held++;
     }
-    // Aging looks only at work that is genuinely waiting on a person. A booked
-    // job with a date next month is not stale, it is scheduled.
-    const waiting = jobs.filter(j => {
-      const k = laneOf(j, { hasTimeEntry: j.hasTimeEntry });
-      return k !== 'scheduled';
-    });
-    const aged = waiting
-      .map(j => ({ job: j, days: ageDays(j) }))
-      .filter(x => x.days >= 7)
-      .sort((a, b) => b.days - a.days);
-
-    return {
-      byLane, unowned, held, total: jobs.length,
-      aged,
-      over7: aged.length,
-      over14: aged.filter(x => x.days >= 14).length,
-      over30: aged.filter(x => x.days >= 30).length,
-    };
+    return { byLane, unowned, held, total: jobs.length };
   }, [jobs]);
 
   if (loading) return <div style={S.msg}>Loading…</div>;
@@ -129,34 +103,6 @@ export default function CommandCenter({ email, onNavigate }) {
         />
       </div>
 
-      {stats.over7 > 0 && (
-        <>
-          <div style={S.rowHead}>Sitting too long</div>
-          <div style={S.grid}>
-            <Tile label="7+ days" count={stats.over7} color="#d97706"
-                  sub="Open, not scheduled" onClick={() => onNavigate('/board')} />
-            <Tile label="14+ days" count={stats.over14} color="#ea580c"
-                  sub="Two weeks waiting" urgent onClick={() => onNavigate('/board')} />
-            <Tile label="30+ days" count={stats.over30} color="#dc2626"
-                  sub="A month waiting" urgent onClick={() => onNavigate('/board')} />
-          </div>
-
-          <div style={S.oldest}>
-            {stats.aged.slice(0, 6).map(({ job, days }) => (
-              <button key={job.id} style={S.oldRow} onClick={() => onNavigate('/board')}>
-                <span style={S.oldDays}>{days}d</span>
-                <span style={S.oldName}>
-                  {job.customer?.name || job.customer_name || 'No customer'}
-                </span>
-                <span style={S.oldIssue}>
-                  {job.issue ? String(job.issue).slice(0, 60) : 'no description'}
-                </span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-
       {stats.total === 0 && (
         <div style={S.empty}>
           Nothing on the board yet. The seeded test jobs live in Needs action —
@@ -186,15 +132,6 @@ const S = {
   tileCount: { fontSize: 26, fontWeight: 800, lineHeight: 1 },
   tileLabel: { color: '#cbd5e1', fontSize: 13, fontWeight: 600, marginTop: 6 },
   tileSub: { color: '#64748b', fontSize: 11, marginTop: 3, lineHeight: 1.3 },
-  oldest: { marginBottom: 22 },
-  oldRow: { display: 'flex', alignItems: 'baseline', gap: 10, width: '100%',
-            textAlign: 'left', background: '#111c2e', border: 0,
-            borderBottom: '1px solid #1e293b', padding: '10px 12px',
-            cursor: 'pointer' },
-  oldDays: { color: '#fbbf24', fontSize: 12, fontWeight: 800, minWidth: 34 },
-  oldName: { color: '#e2e8f0', fontSize: 13, fontWeight: 600 },
-  oldIssue: { color: '#64748b', fontSize: 12, overflow: 'hidden',
-              whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
   empty: { color: '#94a3b8', fontSize: 13, background: '#111c2e', padding: 16,
            borderRadius: 10, lineHeight: 1.5, maxWidth: 620 },
 };

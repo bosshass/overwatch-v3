@@ -15,7 +15,7 @@
 
 import { supabase } from './supabaseClient';
 import { canMoveTo, laneByKey, softWarnings, canClose } from '../utils/lanes';
-import { createEvent, deleteEvent } from './calendar';
+import { createEvent, deleteEvent, updateEvent } from './calendar';
 import { calendarForBooking } from '../config/calendars';
 
 const JOB_SELECT = `
@@ -387,6 +387,33 @@ export async function finishWork(job, {
         + (allDone ? '' : ' (waiting on other techs)'),
     changed_by: actor || null,
   });
+
+  // ── Write disposition back to the Google event ─────────────────────────
+  // The calendar event is where everyone else sees the job: Shana in Google
+  // Calendar, JR on his phone. Without this, "Needs another trip" exists only
+  // in Overwatch and whoever opens the event has no idea the visit happened.
+  const calId = job.scheduled_calendar_id;
+  const evId  = job.scheduled_event_id;
+  if (calId && evId) {
+    const lines = [
+      techName ? `Tech: ${techName}` : null,
+      `Logged: ${h}h`,
+      disposition === 'finished'
+        ? `Disposition: Finished${allDone ? ' — Good to go' : ' (waiting on other techs)'}`
+        : `Disposition: Needs another trip — ${returnReason}`,
+      notes ? `Notes: ${notes}` : null,
+      materials ? `Materials: ${materials}` : null,
+      '',
+      `Overwatch job ${String(job.id).slice(0, 8)}`,
+    ].filter(l => l !== null).join('\n');
+
+    // updateEvent is a PATCH — it preserves the event's title, date, and
+    // location and only overwrites the description. The booking title
+    // ("<Customer> — <issue>") stays unchanged on the calendar.
+    await updateEvent(calId, evId, { description: lines });
+    // calendar failure is not a reason to fail the disposition — the DB write
+    // already committed and the tech has moved on.
+  }
 
   return { ok: true, movedTo, allDone, hours: h };
 }

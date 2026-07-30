@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import ContactBar from '../components/ContactBar';
 import { laneOf, laneLabel, hasHold, moveOptions, gateFailures, softWarnings } from '../utils/lanes';
 import { techsOn, ownerLabel, isMultiTech } from '../utils/ownership';
 import { fetchTimeEntries, moveTo, clearHold } from '../services/jobs';
@@ -87,17 +86,9 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
         </div>
 
         {draft.customer?.address && <div style={S.addr}>{draft.customer.address}</div>}
-
-        {/* Call and Text. Texts leave the operator's own line via the OS — no
-            A2P registration in this path. Every tap lands in job_history so a
-            second person does not call the same customer an hour later. */}
-        <ContactBar
-          job={draft}
-          customer={draft.customer}
-          actor={actor}
-          scheduledFor={draft.assignments?.[0]?.scheduled_for}
-          onLogged={() => onChanged?.()}
-        />
+        {draft.customer?.phone && (
+          <a href={`tel:${draft.customer.phone}`} style={S.phone}>{draft.customer.phone}</a>
+        )}
 
         <div style={S.laneRow}>
           <span style={S.laneChip}>{laneLabel(lane)}</span>
@@ -206,7 +197,14 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
         </div>
 
         {/* ── Time ────────────────────────────────────────────────────── */}
-        <div style={S.sectionHead}>Time logged</div>
+        <div style={S.sectionHead}>
+          Time logged
+          {entries.length > 0 && (
+            <span style={S.totalHrs}>
+              {(entries.reduce((n,t)=>n+(t.total_minutes||0),0)/60).toFixed(1)}h total
+            </span>
+          )}
+        </div>
         {entries.length === 0
           ? <div style={S.none}>No time entries</div>
           : entries.map(t => (
@@ -280,6 +278,7 @@ const S = {
           borderRadius: 8, padding: '8px 10px', fontSize: 14, fontFamily: 'inherit', resize: 'vertical' },
   save: { width: '100%', marginTop: 14, background: '#2563eb', color: '#fff', border: 0,
           borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
+  totalHrs: { color: '#14b8a6', fontSize: 11, fontWeight: 700, marginLeft: 8 },
   sectionHead: { color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: .5,
                  marginTop: 24, marginBottom: 8, borderTop: '1px solid #1e293b', paddingTop: 14 },
   none: { color: '#475569', fontSize: 13 },

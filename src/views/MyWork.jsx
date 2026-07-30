@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import ContactBar from '../components/ContactBar';
-import { fetchMyDay, fetchNotes } from '../services/jobs';
+import { fetchMyDay, addNote, fetchNotes } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
 import FinishSheet from './FinishSheet';
@@ -34,6 +33,8 @@ export default function MyWork({ actor }) {
   const [day, setDay] = useState(() => localDay(new Date()));
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
   const [openStop, setOpenStop] = useState(null);
@@ -270,6 +271,8 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
   const c = job.customer || {};
 
   const [notes, setNotes] = useState([]);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
   // Human notes only. job_history also carries every status move — "Created",
@@ -288,6 +291,7 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
   useEffect(() => { reload(); }, [reload]);
 
   const fullAddress = [c.address, c.city, c.state, c.zip].filter(Boolean).join(', ');
+  const telHref = c.phone ? `tel:${String(c.phone).replace(/[^\d+]/g, '')}` : null;
   // Apple Maps and Google Maps both honour this; the OS picks the installed app.
   const mapHref = fullAddress
     ? `https://maps.google.com/?q=${encodeURIComponent(fullAddress)}`
@@ -326,17 +330,10 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
         {fullAddress && <div style={T.addr}>{fullAddress}</div>}
 
         {/* ── The two things needed standing in a driveway ──────────────── */}
-        <ContactBar
-          job={job}
-          customer={c}
-          actor={actor}
-          techName={stop.tech?.name}
-          scheduledFor={stop.scheduled_for}
-          compact
-          onLogged={reload}
-        />
-
         <div style={T.actions}>
+          {telHref
+            ? <a href={telHref} style={{ ...T.action, ...T.call }}>Call {c.phone}</a>
+            : <span style={{ ...T.action, ...T.actionOff }}>No phone on file</span>}
           {mapHref
             ? <a href={mapHref} target="_blank" rel="noreferrer"
                  style={{ ...T.action, ...T.nav }}>Directions</a>
@@ -350,13 +347,28 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
         </div>
 
         {/* ── Notes ────────────────────────────────────────────────────── */}
-        {/* READ ONLY. There is exactly one way to write a note: dispositioning
-            the work. Two note boxes back to back — one here with a save button
-            and another inside Finish — is two paths to the same field, and the
-            tech has to guess which one counts. */}
         <div style={T.sectionHead}>Notes</div>
         {err && <div style={T.err}>{err}</div>}
 
+
+        <textarea
+          style={T.textarea} rows={2}
+          placeholder="Gate code 4417. Dog in the back yard."
+          value={draft} onChange={e => setDraft(e.target.value)}
+        />
+        <button
+          style={{ ...T.save, ...(draft.trim() ? {} : T.saveOff) }}
+          disabled={saving || !draft.trim()}
+          onClick={async () => {
+            setSaving(true); setErr(null);
+            const res = await addNote(job, draft, actor);
+            setSaving(false);
+            if (!res.ok) { setErr(res.reason); return; }
+            setDraft(''); reload();
+          }}
+        >
+          {saving ? 'Saving…' : 'Add note'}
+        </button>
 
         <div style={T.feed}>
           {notes.length === 0

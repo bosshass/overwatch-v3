@@ -157,13 +157,16 @@ export function weekStart(d = new Date()) {
 // ============================================================================
 
 function eventBody({ title, description, startISO, endISO, location }) {
-  return {
-    summary: title,
-    description: description || '',
-    location: location || '',
-    start: { dateTime: startISO },
-    end: { dateTime: endISO },
-  };
+  // Only include fields that are explicitly provided. A PATCH with
+  // start: { dateTime: undefined } wipes the event time — the caller
+  // should only pass what it intends to change.
+  const body = {};
+  if (title !== undefined)       body.summary     = title;
+  if (description !== undefined) body.description = description || '';
+  if (location !== undefined)    body.location    = location    || '';
+  if (startISO !== undefined)    body.start       = { dateTime: startISO };
+  if (endISO !== undefined)      body.end         = { dateTime: endISO };
+  return body;
 }
 
 export async function createEvent(calendarId, ev) {
