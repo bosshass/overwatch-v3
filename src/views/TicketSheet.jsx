@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import ContactBar from '../components/ContactBar';
 import { laneOf, laneLabel, hasHold, moveOptions, gateFailures, softWarnings } from '../utils/lanes';
 import { techsOn, ownerLabel, isMultiTech } from '../utils/ownership';
 import { fetchTimeEntries, moveTo, clearHold } from '../services/jobs';
@@ -86,9 +87,17 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
         </div>
 
         {draft.customer?.address && <div style={S.addr}>{draft.customer.address}</div>}
-        {draft.customer?.phone && (
-          <a href={`tel:${draft.customer.phone}`} style={S.phone}>{draft.customer.phone}</a>
-        )}
+
+        {/* Call and Text. Texts leave the operator's own line via the OS — no
+            A2P registration in this path. Every tap lands in job_history so a
+            second person does not call the same customer an hour later. */}
+        <ContactBar
+          job={draft}
+          customer={draft.customer}
+          actor={actor}
+          scheduledFor={draft.assignments?.[0]?.scheduled_for}
+          onLogged={() => onChanged?.()}
+        />
 
         <div style={S.laneRow}>
           <span style={S.laneChip}>{laneLabel(lane)}</span>

@@ -6,6 +6,7 @@ import CustomersView from './views/CustomersView';
 import MyWork from './views/MyWork';
 import CalendarView from './views/CalendarView';
 import NewJobModal from './views/NewJobModal';
+import SmsCheck from './views/SmsCheck';
 import { VERSION } from './version';
 
 // ============================================================================
@@ -16,6 +17,9 @@ import { VERSION } from './version';
 // useAuth.js now; this file decides what to render and nothing else.
 //
 // No People route — that screen is not in v3 (see lanes.js note 9).
+//
+// /sms is intentionally absent from ROUTES. It is an operator diagnostic, not
+// a place a tech should land by tapping around. Reachable by typing the path.
 // ============================================================================
 
 const ROUTES = [
@@ -87,7 +91,9 @@ export default function App() {
         </div>
       )}
 
-      {path === '/board'
+      {path === '/sms'
+        ? <SmsCheck />
+        : path === '/board'
         ? <BoardView key={bump} actor={email} />
         : path === '/calendar'
         ? <CalendarView key={bump} actor={email} />

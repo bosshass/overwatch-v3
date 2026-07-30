@@ -1,11 +1,11 @@
 {
   "name": "overwatch-v3",
   "private": true,
-  "version": "3.4.1",
+  "version": "3.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "lint:quick": "eslint -c eslint.quickcheck.mjs src/",
+    "lint:quick": "eslint -c eslint.quickcheck.mjs src/ api/",
     "build": "vite build",
     "verify": "npm run lint:quick && vite build"
   },

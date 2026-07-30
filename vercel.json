@@ -1,6 +1,5 @@
 {
   "rewrites": [
-    { "source": "/api/sse", "destination": "/api/sse.js" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "headers": [

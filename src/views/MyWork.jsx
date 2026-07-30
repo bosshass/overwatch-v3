@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import ContactBar from '../components/ContactBar';
 import { fetchMyDay, fetchNotes } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
@@ -229,6 +230,7 @@ export default function MyWork({ actor }) {
       {openStop && (
         <StopSheet
           stop={openStop}
+          actor={actor}
           onClose={() => setOpenStop(null)}
           onFinish={() => { const s = openStop; setOpenStop(null); setFinishStop(s); }}
         />
@@ -263,7 +265,7 @@ const shortName = who => String(who || 'system').split('@')[0];
 // ============================================================================
 // StopSheet — one stop. Call, directions, notes, disposition.
 // ============================================================================
-function StopSheet({ stop, onClose, onFinish }) {
+function StopSheet({ stop, actor, onClose, onFinish }) {
   const job = stop.job || {};
   const c = job.customer || {};
 
@@ -286,7 +288,6 @@ function StopSheet({ stop, onClose, onFinish }) {
   useEffect(() => { reload(); }, [reload]);
 
   const fullAddress = [c.address, c.city, c.state, c.zip].filter(Boolean).join(', ');
-  const telHref = c.phone ? `tel:${String(c.phone).replace(/[^\d+]/g, '')}` : null;
   // Apple Maps and Google Maps both honour this; the OS picks the installed app.
   const mapHref = fullAddress
     ? `https://maps.google.com/?q=${encodeURIComponent(fullAddress)}`
@@ -325,10 +326,17 @@ function StopSheet({ stop, onClose, onFinish }) {
         {fullAddress && <div style={T.addr}>{fullAddress}</div>}
 
         {/* ── The two things needed standing in a driveway ──────────────── */}
+        <ContactBar
+          job={job}
+          customer={c}
+          actor={actor}
+          techName={stop.tech?.name}
+          scheduledFor={stop.scheduled_for}
+          compact
+          onLogged={reload}
+        />
+
         <div style={T.actions}>
-          {telHref
-            ? <a href={telHref} style={{ ...T.action, ...T.call }}>Call {c.phone}</a>
-            : <span style={{ ...T.action, ...T.actionOff }}>No phone on file</span>}
           {mapHref
             ? <a href={mapHref} target="_blank" rel="noreferrer"
                  style={{ ...T.action, ...T.nav }}>Directions</a>

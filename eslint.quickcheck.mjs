@@ -47,4 +47,23 @@ export default [
       'no-empty': 'off',
     },
   },
+
+  // api/ is new in v3 (3.5.0, api/send-sms.js). It runs in Node, not the
+  // browser: process and Buffer exist, window and document do not. Without
+  // this block the gate would not read api/ at all, and a serverless function
+  // that throws is invisible until someone hits the endpoint in production.
+  {
+    files: ['api/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      'no-undef': 'error',
+      'no-dupe-keys': 'error',
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+    },
+  },
 ];
