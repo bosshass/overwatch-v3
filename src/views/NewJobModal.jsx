@@ -27,7 +27,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
 
   useEffect(() => {
     supabase.from('customers')
-      .select('id, short_code, name, address, phone, cs_number')
+      .select('id, unique_id, name, address, phone, cs_number')
       .is('merged_into', null)
       .order('name')
       .limit(500)
@@ -39,7 +39,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
   const matches = q.trim().length < 2 ? [] : customers.filter(c => {
     const s = q.toLowerCase();
     return (c.name || '').toLowerCase().includes(s)
-        || (c.short_code || '').toLowerCase().includes(s)
+        || (c.unique_id || '').toLowerCase().includes(s)
         || (c.cs_number || '').includes(s)
         || (c.address || '').toLowerCase().includes(s);
   }).slice(0, 8);
@@ -95,7 +95,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
             <div>
               <div style={S.pickedName}>{customer.name}</div>
               <div style={S.pickedSub}>
-                {customer.short_code}{customer.address && ` · ${customer.address}`}
+                {customer.unique_id}{customer.address && ` · ${customer.address}`}
               </div>
             </div>
             {!presetCustomer && (
@@ -115,7 +115,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
             {matches.map(c => (
               <button key={c.id} style={S.result} onClick={() => setCustomer(c)}>
                 <span style={S.resName}>{c.name}</span>
-                <span style={S.resSub}>{c.short_code}{c.address && ` · ${c.address}`}</span>
+                <span style={S.resSub}>{c.unique_id}{c.address && ` · ${c.address}`}</span>
               </button>
             ))}
             {q.trim().length >= 2 && matches.length === 0 && (

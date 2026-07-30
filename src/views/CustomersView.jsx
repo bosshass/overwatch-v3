@@ -5,7 +5,7 @@ import { supabase } from '../services/supabaseClient';
 // CustomersView — the customer list and record.
 //
 // RULES CARRIED OVER FROM THE V9 DEDUP WORK:
-//   - short_code is the canonical ID. Not drh_id — those were garbage from a
+//   - unique_id is the canonical ID. Not drh_id — those were garbage from a
 //     broken trigger and v3 does not have the column at all.
 //   - merged_into rows are HIDDEN everywhere. Always filter is('merged_into', null).
 //   - Same name + different cs_number = a different physical location. Keep
@@ -32,7 +32,7 @@ function Detail({ customer, onClose, onNewJob }) {
           <div>
             <div style={S.name}>{customer.name}</div>
             <div style={S.sub}>
-              {customer.short_code}
+              {customer.unique_id}
               {customer.cs_number && ` · CS ${customer.cs_number}`}
             </div>
           </div>
@@ -90,10 +90,15 @@ export default function CustomersView({ onNewJob }) {
     if (!s) return rows;
     return rows.filter(c =>
       (c.name || '').toLowerCase().includes(s) ||
-      (c.short_code || '').toLowerCase().includes(s) ||
+      (c.unique_id || '').toLowerCase().includes(s) ||
       (c.cs_number || '').includes(s) ||
       (c.address || '').toLowerCase().includes(s) ||
-      (c.phone || '').includes(s)
+      (c.phone || '').includes(s) ||
+      // business_name and contact_name arrived with the 409-customer import.
+      // Someone looking for "Big O" or asking for a person by name will not
+      // know the account is filed as something else.
+      (c.business_name || '').toLowerCase().includes(s) ||
+      (c.contact_name || '').toLowerCase().includes(s)
     );
   }, [rows, q]);
 
@@ -116,7 +121,7 @@ export default function CustomersView({ onNewJob }) {
           <button key={c.id} style={S.row} onClick={() => setSel(c)}>
             <div style={S.rowMain}>
               <span style={S.rowName}>{c.name}</span>
-              <span style={S.rowCode}>{c.short_code}</span>
+              <span style={S.rowCode}>{c.unique_id}</span>
             </div>
             <div style={S.rowSub}>
               {c.address || 'No address'}

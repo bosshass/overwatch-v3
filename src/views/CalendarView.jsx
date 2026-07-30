@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { fetchScheduleRange } from '../services/jobs';
+import { fetchScheduleRange, fetchJob } from '../services/jobs';
 import { fetchEvents, localDay, weekStart } from '../services/calendar';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
@@ -40,6 +40,18 @@ export default function CalendarView({ actor }) {
 
   const [selected, setSelected] = useState(() => localDay(new Date()));
   const [openJob, setOpenJob] = useState(null);
+  const [loadingJob, setLoadingJob] = useState(false);
+
+  // fetchScheduleRange returns the job WITHOUT its assignments — it selects a
+  // narrow set of job columns for the grid. Handing that to TicketSheet made a
+  // finished job read "Nobody on it yet" and offer "Schedule this", because
+  // techsOn([]) is empty. Always load the full job before opening the sheet.
+  const open = async (jobId) => {
+    setLoadingJob(true);
+    try { setOpenJob(await fetchJob(jobId)); }
+    catch (e) { setErr(e.message); }
+    setLoadingJob(false);
+  };
   const [schedJob, setSchedJob] = useState(null);
 
   // The grid starts on the Monday on or before the 1st, and always runs 42 days.
@@ -186,6 +198,9 @@ export default function CalendarView({ actor }) {
                 <div key={a.id} style={S.pill}>
                   <span style={{ ...S.pillDot, background: a.tech?.color || '#64748b' }} />
                   <span style={S.pillText}>
+                    {/* Tech first: a 3-tech job otherwise renders as three
+                        identical customer names and reads like 3 jobs. */}
+                    {a.tech?.name ? `${a.tech.name.split(' ')[0]} · ` : ''}
                     {a.job?.customer?.name || 'No customer'}
                   </span>
                 </div>
@@ -213,7 +228,7 @@ export default function CalendarView({ actor }) {
             const j = a.job || {};
             const c = j.customer || {};
             return (
-              <button key={a.id} style={S.dayRow} onClick={() => setOpenJob(j)}>
+              <button key={a.id} style={S.dayRow} onClick={() => open(j.id)}>
                 <span style={S.rowTime}>
                   {a.scheduled_for ? time(a.scheduled_for) : '—'}
                 </span>
@@ -252,12 +267,14 @@ export default function CalendarView({ actor }) {
         </>
       )}
 
+      {loadingJob && <div style={S.loading}>Loading…</div>}
+
       {openJob && (
         <TicketSheet
-          job={rows.find(a => a.job?.id === openJob.id)?.job || openJob}
+          job={openJob}
           actor={actor}
           onClose={() => setOpenJob(null)}
-          onChanged={load}
+          onChanged={() => { load(); open(openJob.id); }}
           onSchedule={j => { setOpenJob(null); setSchedJob(j); }}
         />
       )}
@@ -343,4 +360,5 @@ const S = {
   evTime: { color: '#64748b', fontSize: 10, minWidth: 56, flexShrink: 0 },
   evTitle: { color: '#94a3b8', fontSize: 12, flex: 1 },
   evCal: { color: '#475569', fontSize: 9 },
+  loading: { color: '#94a3b8', fontSize: 12, marginTop: 10 },
 };

@@ -20,7 +20,7 @@ import { calendarForBooking } from '../config/calendars';
 
 const JOB_SELECT = `
   *,
-  customer:customers ( id, short_code, name, address, phone, cs_number ),
+  customer:customers ( id, unique_id, name, address, phone, cs_number ),
   assignments:job_assignments (
     id, tech_id, day_number, scheduled_for, estimated_hours,
     is_complete, calendar_event_id,
@@ -234,7 +234,7 @@ export async function fetchMyDay(techId, dayISO) {
       job:jobs (
         id, status, issue, job_type, priority, estimated_hours, due_date,
         scheduled_date, scheduled_event_id, scheduled_calendar_id, customer_id,
-        customer:customers ( id, short_code, cs_number, name, address, city, state, zip, phone )
+        customer:customers ( id, unique_id, cs_number, name, address, city, state, zip, phone )
       )
     `)
     .eq('tech_id', techId)
@@ -258,7 +258,7 @@ export async function fetchScheduleRange(fromISO, toISO) {
       tech:techs ( id, name, color, email ),
       job:jobs (
         id, status, issue, job_type, priority, estimated_hours, scheduled_date,
-        customer:customers ( id, short_code, cs_number, name, address, city, phone )
+        customer:customers ( id, unique_id, cs_number, name, address, city, phone )
       )
     `)
     .gte('scheduled_for', fromISO)

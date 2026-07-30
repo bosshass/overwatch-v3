@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchMyDay, addNote, fetchNotes } from '../services/jobs';
+import { fetchMyDay, fetchNotes } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
 import FinishSheet from './FinishSheet';
@@ -229,7 +229,6 @@ export default function MyWork({ actor }) {
       {openStop && (
         <StopSheet
           stop={openStop}
-          actor={actor}
           onClose={() => setOpenStop(null)}
           onFinish={() => { const s = openStop; setOpenStop(null); setFinishStop(s); }}
         />
@@ -264,13 +263,11 @@ const shortName = who => String(who || 'system').split('@')[0];
 // ============================================================================
 // StopSheet — one stop. Call, directions, notes, disposition.
 // ============================================================================
-function StopSheet({ stop, actor, onClose, onFinish }) {
+function StopSheet({ stop, onClose, onFinish }) {
   const job = stop.job || {};
   const c = job.customer || {};
 
   const [notes, setNotes] = useState([]);
-  const [draft, setDraft] = useState('');
-  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
   // Human notes only. job_history also carries every status move — "Created",
@@ -295,14 +292,6 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
     ? `https://maps.google.com/?q=${encodeURIComponent(fullAddress)}`
     : null;
 
-  const save = async () => {
-    setSaving(true); setErr(null);
-    const res = await addNote(job, draft, actor);
-    setSaving(false);
-    if (!res.ok) { setErr(res.reason); return; }
-    setDraft('');
-    reload();
-  };
 
   return (
     <div style={T.backdrop} onClick={onClose}>
@@ -312,7 +301,7 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
         <div style={T.head}>
           <div>
             <div style={T.cust}>{c.name || 'No customer'}</div>
-            {c.short_code && <span style={T.code}>{c.short_code}</span>}
+            {c.unique_id && <span style={T.code}>{c.unique_id}</span>}
             {c.cs_number && <span style={T.code}>CS {c.cs_number}</span>}
           </div>
           <button style={T.x} onClick={onClose}>✕</button>
@@ -353,18 +342,13 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
         </div>
 
         {/* ── Notes ────────────────────────────────────────────────────── */}
+        {/* READ ONLY. There is exactly one way to write a note: dispositioning
+            the work. Two note boxes back to back — one here with a save button
+            and another inside Finish — is two paths to the same field, and the
+            tech has to guess which one counts. */}
         <div style={T.sectionHead}>Notes</div>
         {err && <div style={T.err}>{err}</div>}
 
-        <textarea
-          style={T.textarea} rows={2}
-          placeholder="Gate code 4417. Dog in the back yard."
-          value={draft} onChange={e => setDraft(e.target.value)}
-        />
-        <button style={{ ...T.save, ...(draft.trim() ? {} : T.saveOff) }}
-                disabled={saving || !draft.trim()} onClick={save}>
-          {saving ? 'Saving…' : 'Add note'}
-        </button>
 
         <div style={T.feed}>
           {notes.length === 0

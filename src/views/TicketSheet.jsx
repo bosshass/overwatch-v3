@@ -71,7 +71,7 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
               {draft.customer?.name || draft.customer_name || 'No customer'}
             </div>
             <div style={S.sub}>
-              {draft.customer?.short_code}
+              {draft.customer?.unique_id}
               {draft.customer?.cs_number && ` · CS ${draft.customer.cs_number}`}
             </div>
           </div>
@@ -183,7 +183,11 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
 
         <div style={S.actionRow}>
           <button style={S.schedule} onClick={() => onSchedule(draft)}>
-            {techs.length ? 'Reschedule' : 'Schedule this'}
+            {/* A finished job with people on it is not unscheduled work. Saying
+                "Schedule this" there reads as if the visit never happened. */}
+            {draft.status === 'good_to_go' || draft.status === 'return_pending'
+              ? 'Schedule another visit'
+              : techs.length ? 'Reschedule' : 'Schedule this'}
           </button>
           {techs.length > 0 && onFinish && (
             <button style={S.finish} onClick={() => onFinish(draft)}>
