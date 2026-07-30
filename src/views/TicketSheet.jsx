@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { laneOf, laneLabel, hasHold, moveOptions, gateFailures, softWarnings } from '../utils/lanes';
 import { techsOn, ownerLabel, isMultiTech } from '../utils/ownership';
-import { fetchTimeEntries, moveTo, clearHold } from '../services/jobs';
+import { fetchTimeEntries, moveTo, clearHold, addNote, fetchNotes } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 
 // ============================================================================
@@ -23,9 +23,20 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
   const [dirty, setDirty] = useState(false);
+  const [noteText, setNoteText] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  const refreshNotes = () =>
+    fetchNotes(job.id).then(rows =>
+      setHistory(rows.filter(h => h.from_status === h.to_status && h.notes)));
 
   useEffect(() => { setDraft(job); setDirty(false); }, [job]);
-  useEffect(() => { fetchTimeEntries(job.id).then(setEntries).catch(() => {}); }, [job.id]);
+  useEffect(() => {
+    fetchTimeEntries(job.id).then(setEntries).catch(() => {});
+    fetchNotes(job.id).then(rows =>
+      setHistory(rows.filter(h => h.from_status === h.to_status && h.notes)));
+  }, [job.id]);
 
   const set = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setDirty(true); };
 
@@ -150,9 +161,45 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
         <textarea style={S.area} rows={2}
           value={draft.issue || ''} onChange={e => set('issue', e.target.value)} />
 
-        <label style={S.label}>Notes</label>
-        <textarea style={S.area} rows={3}
+        <label style={S.label}>Internal notes</label>
+        <textarea style={S.area} rows={2}
+          placeholder="Pre-visit notes — access code, what to bring, heads up for the tech."
           value={draft.notes || ''} onChange={e => set('notes', e.target.value)} />
+
+        {/* ── Note thread ───────────────────────────────────────────────── */}
+        <div style={S.threadHead}>
+          <span style={S.label}>Notes</span>
+        </div>
+        <div style={S.threadInput}>
+          <textarea style={S.noteArea} rows={2}
+            placeholder="Add a note — it locks with your name and timestamp."
+            value={noteText} onChange={e => setNoteText(e.target.value)} />
+          <button
+            style={{ ...S.noteBtn, ...(noteText.trim() ? {} : S.noteBtnOff) }}
+            disabled={noteSaving || !noteText.trim()}
+            onClick={async () => {
+              setNoteSaving(true);
+              await addNote(draft, noteText, actor);
+              setNoteText(''); refreshNotes(); setNoteSaving(false);
+            }}
+          >{noteSaving ? 'Saving…' : 'Add note'}</button>
+        </div>
+        <div style={S.thread}>
+          {history.length === 0
+            ? <div style={S.none}>No notes yet.</div>
+            : history.map(n => (
+                <div key={n.id} style={S.threadNote}>
+                  <div style={S.threadMeta}>
+                    <span>{(n.changed_by||'system').split('@')[0]}</span>
+                    <span style={S.threadTime}>
+                      {new Date(n.changed_at).toLocaleString(undefined,
+                        { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
+                    </span>
+                  </div>
+                  <div style={S.threadBody}>{n.notes}</div>
+                </div>
+              ))}
+        </div>
 
         {dirty && (
           <button style={S.save} disabled={saving} onClick={save}>
@@ -279,6 +326,21 @@ const S = {
   save: { width: '100%', marginTop: 14, background: '#2563eb', color: '#fff', border: 0,
           borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
   totalHrs: { color: '#14b8a6', fontSize: 11, fontWeight: 700, marginLeft: 8 },
+  threadHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                marginTop: 18, marginBottom: 6 },
+  threadInput: { display: 'flex', flexDirection: 'column', gap: 6 },
+  noteArea: { background: '#0b1220', color: '#e2e8f0', border: '1px solid #1e293b',
+              borderRadius: 8, padding: '8px 10px', fontSize: 13, resize: 'vertical',
+              fontFamily: 'inherit' },
+  noteBtn: { background: '#1e293b', color: '#cbd5e1', border: 0, borderRadius: 8,
+             padding: '8px 12px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+             alignSelf: 'flex-end' },
+  noteBtnOff: { opacity: .45, cursor: 'not-allowed' },
+  thread: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 },
+  threadNote: { background: '#0b1220', borderRadius: 8, padding: '8px 10px' },
+  threadMeta: { display: 'flex', gap: 10, alignItems: 'baseline', marginBottom: 3 },
+  threadTime: { color: '#475569', fontSize: 10 },
+  threadBody: { color: '#e2e8f0', fontSize: 13, lineHeight: 1.45, whiteSpace: 'pre-wrap' },
   sectionHead: { color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: .5,
                  marginTop: 24, marginBottom: 8, borderTop: '1px solid #1e293b', paddingTop: 14 },
   none: { color: '#475569', fontSize: 13 },
