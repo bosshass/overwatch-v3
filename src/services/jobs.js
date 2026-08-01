@@ -15,7 +15,7 @@
 
 import { supabase } from './supabaseClient';
 import { canMoveTo, laneByKey, softWarnings, canClose } from '../utils/lanes';
-import { createEvent, deleteEvent, updateEvent } from './calendar';
+import { createEvent, updateEvent, moveEvent } from './calendar';
 import { calendarForBooking } from '../config/calendars';
 
 const JOB_SELECT = `
@@ -116,13 +116,25 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
   if (!techs.length) return { ok: false, reason: 'Pick at least one tech' };
   if (!date) return { ok: false, reason: 'Pick a date' };
 
-  // Rebooking: kill the OLD calendar event before writing new assignments.
-  // Skipping this is how v9 grew ghost bookings — an event nobody was assigned
-  // to, sitting on a tech's calendar forever.
+  // Rebooking moves the EXISTING event. It does not destroy and replace it.
+  //
+  // v9 deleted the old event and created a new one, which threw away everything
+  // the event had accumulated — access codes, gate instructions, whatever Shana
+  // or a tech had typed into the description, and the event's own history.
+  // A reschedule is a change of date, not a different piece of work.
+  //
+  // Two cases, because headcount decides which calendar a booking lives on:
+  //   same calendar      → PATCH the times below, event untouched otherwise
+  //   different calendar → move() first; Google keeps the id and all content
+  //
+  // Note this is the RESCHEDULE path only. A return trip is a separate visit
+  // and gets its own event — it must never move or overwrite the original.
   let calWarning = null;
-  if (job.scheduled_event_id && job.scheduled_calendar_id) {
-    const gone = await deleteEvent(job.scheduled_calendar_id, job.scheduled_event_id);
-    if (!gone.ok) calWarning = `Old calendar event not removed — ${gone.reason}`;
+  let existingEventId = null;
+  const isReturnTrip = job.status === 'return_pending';
+
+  if (!isReturnTrip && job.scheduled_event_id && job.scheduled_calendar_id) {
+    existingEventId = job.scheduled_event_id;
   }
 
   const { error: delErr } = await supabase
@@ -169,17 +181,39 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
 
   let eventId = null;
   if (firstStart && endISO) {
-    const made = await createEvent(calendarId, {
-      title: `${customer} — ${what}`,
-      description: [
-        techNames.length ? `Tech: ${techNames.join(', ')}` : null,
-        `Booked by ${actor || 'Overwatch'}`,
-        `Overwatch job ${String(job.id).slice(0, 8)}`,
-      ].filter(Boolean).join('\n'),
-      startISO: firstStart,
-      endISO,
-      location: job.customer?.address || job.address || '',
-    });
+    // Rescheduling: relocate if headcount changed the target calendar, then
+    // PATCH only the times. Title, location and description are deliberately
+    // NOT sent — eventBody() omits undefined fields, so everything already on
+    // the event survives. Overwriting the description here would wipe exactly
+    // the notes this change exists to protect.
+    let made;
+    if (existingEventId) {
+      const moved = await moveEvent(job.scheduled_calendar_id, existingEventId, calendarId);
+      if (moved.ok) {
+        made = await updateEvent(calendarId, moved.eventId, { startISO: firstStart, endISO });
+      } else if (moved.gone) {
+        // Somebody deleted it in Google. Fall through and make a fresh one.
+        existingEventId = null;
+        calWarning = 'Previous calendar event was missing — created a new one';
+      } else {
+        made = moved;
+      }
+    }
+
+    if (!existingEventId) {
+      made = await createEvent(calendarId, {
+        title: `${customer} — ${what}`,
+        description: [
+          techNames.length ? `Tech: ${techNames.join(', ')}` : null,
+          `Booked by ${actor || 'Overwatch'}`,
+          `Overwatch job ${String(job.id).slice(0, 8)}`,
+        ].filter(Boolean).join('\n'),
+        startISO: firstStart,
+        endISO,
+        location: job.customer?.address || job.address || '',
+      });
+    }
+
     if (made.ok) {
       eventId = made.eventId;
       const ids = (inserted || []).map(r => r.id);
@@ -272,26 +306,60 @@ export async function fetchScheduleRange(fromISO, toISO) {
 // job_history is the one notes store. A note is a history row that does not
 // change status — from and to are the same, so the feed reads as one thread
 // instead of splitting "notes" and "activity" into two lists that disagree.
-export async function addNote(job, text, actor) {
+// ── Notes ────────────────────────────────────────────────────────────────────
+// Notes live in `notes`, not in job_history.
+//
+// They were in job_history because 3.4.1 collapsed several competing note paths
+// into one, and job_history was the one that already worked. But job_history is
+// an AUDIT table — from_status, to_status, snapshot — and storing notes there
+// forced a `from_status === to_status` trick to tell a note from a status
+// change, which is a filter, not a data model.
+//
+// The rule that makes customer search work: ALWAYS stamp customer_id, even when
+// the note belongs to a job. It is redundant — you could join through jobs — and
+// it is deliberate. It makes a customer's whole note history one indexed lookup,
+// and it survives the job being archived, merged or repointed.
+//
+// job_id NULL + on_customer_record true = a standing fact about the customer
+// rather than about one piece of work: gate code, dog in the yard, panel is in
+// the back closet. Those float above the jobs in a customer timeline.
+
+export async function addNote(job, text, actor, { onCustomerRecord = false } = {}) {
   const body = String(text || '').trim();
   if (!body) return { ok: false, reason: 'Nothing to save' };
 
-  const { error } = await supabase.from('job_history').insert({
+  const customerId = job.customer_id || job.customer?.id || null;
+
+  const { error } = await supabase.from('notes').insert({
     job_id: job.id,
-    from_status: job.status,
-    to_status: job.status,
-    notes: body,
-    changed_by: actor || null,
+    customer_id: customerId,
+    body,
+    author_email: actor || null,
+    on_customer_record: onCustomerRecord,
   });
   return error ? { ok: false, reason: error.message } : { ok: true };
 }
 
 export async function fetchNotes(jobId) {
   const { data, error } = await supabase
-    .from('job_history').select('*')
+    .from('notes').select('*')
     .eq('job_id', jobId)
-    .order('changed_at', { ascending: false })
+    .is('archived_at', null)
+    .order('created_at', { ascending: false })
     .limit(50);
+  if (error) throw error;
+  return data || [];
+}
+
+// Every note for a customer — job-attached and standing. This is the query the
+// old shape could not answer without walking every job the customer ever had.
+export async function fetchCustomerNotes(customerId) {
+  const { data, error } = await supabase
+    .from('notes').select('*')
+    .eq('customer_id', customerId)
+    .is('archived_at', null)
+    .order('created_at', { ascending: false })
+    .limit(200);
   if (error) throw error;
   return data || [];
 }
@@ -353,12 +421,26 @@ export async function finishWork(job, {
     }).eq('id', assignmentId);
   }
 
-  // 3. Move the job only when every assigned tech is done. One tech finishing
-  //    a two-tech job does not mean the work is finished.
+  // 3. Disposition is a JOB-level fact. Hours are a TECH-level fact.
+  //
+  //    This used to require every assigned tech to have reported before the
+  //    card could leave the board. In practice that meant the office had to
+  //    impersonate whichever tech had not filed yet — for each of them — and on
+  //    a multi-day job a tech may reasonably not log anything until the last
+  //    day. A card stuck behind other people's paperwork is a worse failure
+  //    than a card that moved slightly early.
+  //
+  //    So: whoever declares 'finished' is asserting the WORK is done, and the
+  //    card moves. Assignments still open stay open. They do not block; they
+  //    become a flag, and the missing hours surface in Billing where they are
+  //    an accounting problem rather than a board problem.
+  //
+  //    lanes.js canMoveTo() has always used this rule for a manual drag —
+  //    ctx.hasTimeEntry, singular. The two paths now agree.
   const { data: remaining } = await supabase
     .from('job_assignments').select('id, is_complete').eq('job_id', job.id);
 
-  const allDone = (remaining || []).length > 0 && remaining.every(a => a.is_complete);
+  const openAssignments = (remaining || []).filter(a => !a.is_complete);
   let movedTo = null;
 
   if (disposition === 'return') {
@@ -368,10 +450,16 @@ export async function finishWork(job, {
       updated_at: new Date().toISOString(),
       updated_by: actor || null,
     }).eq('id', job.id);
-  } else if (allDone) {
+  } else {
+    // 'finished' — the work is done. Move it, and flag any tech who still
+    // owes hours rather than holding the whole card hostage to them.
     movedTo = 'good_to_go';
     await supabase.from('jobs').update({
       status: 'good_to_go',
+      needs_notes: openAssignments.length > 0,
+      needs_notes_flagged_at: openAssignments.length > 0
+        ? new Date().toISOString()
+        : null,
       updated_at: new Date().toISOString(),
       updated_by: actor || null,
     }).eq('id', job.id);
@@ -384,7 +472,9 @@ export async function finishWork(job, {
     notes: disposition === 'return'
       ? `${techName || actor || 'Tech'} logged ${h}h — needs another trip: ${returnReason}`
       : `${techName || actor || 'Tech'} logged ${h}h — finished`
-        + (allDone ? '' : ' (waiting on other techs)'),
+        + (openAssignments.length
+            ? ` (${openAssignments.length} tech${openAssignments.length > 1 ? 's' : ''} still owe hours)`
+            : ''),
     changed_by: actor || null,
   });
 
@@ -399,7 +489,10 @@ export async function finishWork(job, {
       techName ? `Tech: ${techName}` : null,
       `Logged: ${h}h`,
       disposition === 'finished'
-        ? `Disposition: Finished${allDone ? ' — Good to go' : ' (waiting on other techs)'}`
+        ? `Disposition: Finished — Good to go`
+          + (openAssignments.length
+              ? ` (${openAssignments.length} tech${openAssignments.length > 1 ? 's' : ''} still owe hours)`
+              : '')
         : `Disposition: Needs another trip — ${returnReason}`,
       notes ? `Notes: ${notes}` : null,
       materials ? `Materials: ${materials}` : null,
@@ -415,7 +508,7 @@ export async function finishWork(job, {
     // already committed and the tech has moved on.
   }
 
-  return { ok: true, movedTo, allDone, hours: h };
+  return { ok: true, movedTo, openCount: openAssignments.length, hours: h };
 }
 
 // A hold is a badge. It does not move the card out of its lane.

@@ -273,16 +273,13 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
-  // Human notes only. job_history also carries every status move — "Created",
-  // "scheduled → new", "Booked 1 tech for …" — which is audit trail, not
-  // something a tech standing at a door needs to read past. addNote() writes
-  // rows where from_status === to_status, so that is the filter. Nothing is
-  // deleted; the full history is still in job_history for Accounting.
+  // Notes come from `notes` and are notes — no filtering needed. Status moves
+  // ("Created", "scheduled → new", "Booked 1 tech for …") stay in job_history
+  // where Accounting can read them, and a tech standing at a door never has to
+  // scroll past them.
   const reload = useCallback(() => {
     fetchNotes(job.id)
-      .then(rows => setNotes(
-        (rows || []).filter(n => n.notes && n.from_status === n.to_status)
-      ))
+      .then(rows => setNotes(rows || []))
       .catch(e => setErr(e.message));
   }, [job.id]);
 
@@ -373,10 +370,10 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
             ? <div style={T.none}>No notes on this job yet.</div>
             : notes.map(n => (
                 <div key={n.id} style={T.note}>
-                  <div style={T.noteBody}>{n.notes}</div>
+                  <div style={T.noteBody}>{n.body}</div>
                   <div style={T.noteMeta}>
-                    {shortName(n.changed_by)} ·{' '}
-                    {new Date(n.changed_at).toLocaleString(undefined,
+                    {shortName(n.author_email)} ·{' '}
+                    {new Date(n.created_at).toLocaleString(undefined,
                       { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                   </div>
                 </div>

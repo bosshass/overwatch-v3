@@ -28,14 +28,12 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
   const [history, setHistory] = useState([]);
 
   const refreshNotes = () =>
-    fetchNotes(job.id).then(rows =>
-      setHistory(rows.filter(h => h.from_status === h.to_status && h.notes)));
+    fetchNotes(job.id).then(setHistory);
 
   useEffect(() => { setDraft(job); setDirty(false); }, [job]);
   useEffect(() => {
     fetchTimeEntries(job.id).then(setEntries).catch(() => {});
-    fetchNotes(job.id).then(rows =>
-      setHistory(rows.filter(h => h.from_status === h.to_status && h.notes)));
+    fetchNotes(job.id).then(setHistory).catch(() => {});
   }, [job.id]);
 
   const set = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setDirty(true); };
@@ -190,13 +188,13 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
             : history.map(n => (
                 <div key={n.id} style={S.threadNote}>
                   <div style={S.threadMeta}>
-                    <span>{(n.changed_by||'system').split('@')[0]}</span>
+                    <span>{(n.author_email||'system').split('@')[0]}</span>
                     <span style={S.threadTime}>
-                      {new Date(n.changed_at).toLocaleString(undefined,
+                      {new Date(n.created_at).toLocaleString(undefined,
                         { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
                     </span>
                   </div>
-                  <div style={S.threadBody}>{n.notes}</div>
+                  <div style={S.threadBody}>{n.body}</div>
                 </div>
               ))}
         </div>

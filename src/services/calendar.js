@@ -205,6 +205,32 @@ export async function updateEvent(calendarId, eventId, ev) {
   return { ok: true, eventId };
 }
 
+// Relocate an event to another calendar. Google's move endpoint keeps the SAME
+// event id and carries description, attachments, attendees and history across
+// intact — which is the whole point. Delete+create loses all of it, and a
+// tentative hold from Shana can carry access codes, gate instructions and
+// customer context that must survive promotion to a real booking.
+//
+// PATCH cannot do this: an event's calendar is not a writable field.
+export async function moveEvent(calendarId, eventId, destinationCalendarId) {
+  const token = getAccessToken();
+  if (!token) return { ok: false, authExpired: true, reason: 'Not signed in' };
+  if (calendarId === destinationCalendarId) return { ok: true, eventId };
+
+  const res = await fetch(
+    `${API}/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}/move`
+      + `?destination=${encodeURIComponent(destinationCalendarId)}`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  if (res.status === 401) return { ok: false, authExpired: true, reason: 'Google session expired' };
+  if (res.status === 404) return { ok: false, gone: true, reason: 'Event no longer exists' };
+  if (!res.ok) return { ok: false, reason: `Calendar ${res.status} ${res.statusText}` };
+
+  const data = await res.json();
+  return { ok: true, eventId: data.id };
+}
+
 // Deleting an already-deleted event is success, not failure — 404 and 410 both
 // mean "it is not there", which is the state we wanted.
 export async function deleteEvent(calendarId, eventId) {
