@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { LANES, laneOf, hasHold } from '../utils/lanes';
-import { ownerLabel, isUnowned, isMultiTech, techsOn } from '../utils/ownership';
+import { ownerLabel, needsOwner, missingCalendar, isMultiTech, techsOn } from '../utils/ownership';
 import { fetchBoard } from '../services/jobs';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
@@ -54,10 +54,16 @@ function Card({ job, onOpen }) {
       {job.issue && job.issue !== 'Test' && <div style={S.issue}>{job.issue}</div>}
 
       <div style={S.meta}>
-        <span style={isUnowned(job.assignments) ? S.unowned : S.owner}>
-          {ownerLabel(job.assignments)}
-          {isMultiTech(job.assignments) && ` (${techs.length})`}
-        </span>
+        {/* Nobody assigned is only worth saying once the job is scheduled —
+            before that it is the expected state of the whole lane. */}
+        {needsOwner(job) && <span style={S.alarm}>No tech assigned</span>}
+        {missingCalendar(job) && <span style={S.alarm}>Not on a calendar</span>}
+        {ownerLabel(job.assignments) && (
+          <span style={S.owner}>
+            {ownerLabel(job.assignments)}
+            {isMultiTech(job.assignments) && ` (${techs.length})`}
+          </span>
+        )}
         {job.estimated_hours != null && <span style={S.hours}>{job.estimated_hours}h</span>}
         {job.priority && job.priority !== 'normal' && (
           <span style={S.pri}>{job.priority}</span>
@@ -180,7 +186,7 @@ const S = {
   issue: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
   meta: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', fontSize: 11 },
   owner: { color: '#38bdf8' },
-  unowned: { color: '#f87171' },
+  alarm: { color: '#f87171', fontWeight: 700 },
   hours: { color: '#94a3b8' },
   due: { color: '#94a3b8' },
   pri: { color: '#fbbf24', textTransform: 'uppercase', fontWeight: 700 },

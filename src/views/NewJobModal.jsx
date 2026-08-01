@@ -124,24 +124,30 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
           </>
         )}
 
-        <label style={S.label}>Type</label>
-        <div style={S.chips}>
-          {['service', 'install', 'estimate', 'monitoring'].map(t => (
-            <button key={t} onClick={() => set('job_type', t)}
-              style={{ ...S.chip, ...(f.job_type === t ? S.chipOn : {}) }}>{t}</button>
-          ))}
+        <div style={S.rule} />
+
+        <div style={S.row}>
+          <div style={S.col}>
+            <label style={S.label}>Type</label>
+            <div style={S.chips}>
+              {['service', 'install', 'estimate', 'monitoring'].map(t => (
+                <button key={t} onClick={() => set('job_type', t)}
+                  style={{ ...S.chip, ...(f.job_type === t ? S.chipOn : {}) }}>{t}</button>
+              ))}
+            </div>
+          </div>
         </div>
 
-        <label style={S.label}>What's the issue</label>
-        <textarea style={S.area} rows={2} value={f.issue}
-                  onChange={e => set('issue', e.target.value)} />
-
-        <label style={S.label}>Priority</label>
-        <div style={S.chips}>
-          {['low', 'normal', 'high', 'emergency'].map(p => (
-            <button key={p} onClick={() => set('priority', p)}
-              style={{ ...S.chip, ...(f.priority === p ? S.chipOn : {}) }}>{p}</button>
-          ))}
+        <div style={S.row}>
+          <div style={S.col}>
+            <label style={S.label}>Priority</label>
+            <div style={S.chips}>
+              {['low', 'normal', 'high', 'emergency'].map(p => (
+                <button key={p} onClick={() => set('priority', p)}
+                  style={{ ...S.chip, ...(f.priority === p ? S.chipOn : {}) }}>{p}</button>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div style={S.row}>
@@ -158,27 +164,42 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
           </div>
         </div>
 
-        <div style={S.dest}>
-          {qualifiesForOpen
-            ? 'Has priority and hours — this will start in Open, ready to schedule.'
-            : 'Will start in Needs action. Add priority and hours to start it in Open.'}
-        </div>
+        <div style={S.rule} />
 
-        <button style={{ ...S.create, ...(!customer ? S.createOff : {}) }}
-                disabled={!customer || busy} onClick={create}>
-          {busy ? 'Creating…' : customer ? 'Create job' : 'Pick a customer first'}
-        </button>
+        <label style={S.label}>What's the issue</label>
+        <textarea style={S.area} rows={3} value={f.issue}
+                  onChange={e => set('issue', e.target.value)} />
+
+        <div style={S.spacer} />
+
+        <div style={S.footer}>
+          <div style={{ ...S.dest, ...(qualifiesForOpen ? S.destOk : {}) }}>
+            {qualifiesForOpen
+              ? 'Starts in Open — ready to schedule.'
+              : 'Starts in Needs action. Add priority and hours to start it in Open.'}
+          </div>
+          <button style={{ ...S.create, ...(!customer ? S.createOff : {}) }}
+                  disabled={!customer || busy} onClick={create}>
+            {busy ? 'Creating…' : customer ? 'Create job' : 'Pick a customer first'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 const S = {
-  backdrop: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.65)', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 16 },
-  modal: { background: '#111c2e', borderRadius: 14, padding: 18,
-           width: 'min(440px, 100%)', maxHeight: '92vh', overflowY: 'auto' },
-  head: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  // Sheet, not a floating box. TicketSheet is the surface people open dozens of
+  // times a day and it slides from the right at full height; a centered 440px
+  // card for the second-most-used surface is a different mental model for the
+  // same kind of task. Same shell, same width, same scroll behaviour.
+  backdrop: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex',
+              justifyContent: 'flex-end', zIndex: 60 },
+  modal: { background: '#111c2e', width: 'min(460px, 100%)', height: '100%',
+           display: 'flex', flexDirection: 'column',
+           padding: '18px 18px 0', overflowY: 'auto' },
+  head: { display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          paddingBottom: 4 },
   title: { color: '#f1f5f9', fontSize: 18, fontWeight: 700 },
   x: { background: 'transparent', border: 0, color: '#64748b', fontSize: 18, cursor: 'pointer' },
   err: { background: '#7f1d1d', color: '#fecaca', padding: '8px 12px', borderRadius: 8,
@@ -209,9 +230,20 @@ const S = {
   chipOn: { background: '#2563eb', color: '#fff' },
   row: { display: 'flex', gap: 10 },
   col: { flex: 1 },
-  dest: { marginTop: 16, color: '#94a3b8', fontSize: 12, background: '#0b1220',
-          padding: '10px 12px', borderRadius: 8, lineHeight: 1.4 },
-  create: { width: '100%', marginTop: 14, background: '#22c55e', color: '#06240f', border: 0,
+
+  // Divider between the three fields that decide the lane and everything else.
+  rule: { height: 1, background: '#1e293b', margin: '18px 0 2px' },
+
+  // Eats leftover height so the footer sits at the bottom on a tall screen and
+  // is simply pushed down on a short one. No fixed positioning, no overlap.
+  spacer: { flex: 1, minHeight: 16 },
+
+  footer: { position: 'sticky', bottom: 0, background: '#111c2e',
+            paddingTop: 12, paddingBottom: 16, marginTop: 'auto' },
+  dest: { color: '#64748b', fontSize: 12, lineHeight: 1.4, marginBottom: 10,
+          paddingLeft: 2 },
+  destOk: { color: '#4ade80' },
+  create: { width: '100%', background: '#22c55e', color: '#06240f', border: 0,
             borderRadius: 8, padding: '12px', fontSize: 15, fontWeight: 700, cursor: 'pointer' },
   createOff: { background: '#1e293b', color: '#64748b', cursor: 'not-allowed' },
 };

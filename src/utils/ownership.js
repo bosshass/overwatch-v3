@@ -27,13 +27,43 @@ export function techsOn(assignments = []) {
   return [...seen.values()];
 }
 
-export const isUnowned = (assignments = []) => techsOn(assignments).length === 0;
 export const isMultiTech = (assignments = []) => techsOn(assignments).length > 1;
 
+// ── Is nobody on this, and does that matter? ────────────────────────────────
+// These are two different questions and one word was answering both.
+//
+// A job in Open or Needs action with no tech is NORMAL — that is what those
+// lanes mean. Painting it red says "problem" about the entire backlog, which
+// trains people to ignore the colour. A job that is SCHEDULED with no tech is
+// a real fault: a date was written with nobody on it, and it will not appear
+// in anyone's My Work.
+//
+// hasNobody() is the raw count. needsOwner() is the alarm. Only the second
+// should ever be red.
+export const hasNobody = (assignments = []) => techsOn(assignments).length === 0;
+
+export function needsOwner(job) {
+  if (!job) return false;
+  if (job.status !== 'scheduled') return false;
+  return hasNobody(job.assignments);
+}
+
+// A scheduled job with no calendar event is the other half of the same fault:
+// it exists in Overwatch and nowhere the field can see it.
+export function missingCalendar(job) {
+  return Boolean(job) && job.status === 'scheduled' && !job.scheduled_event_id;
+}
+
+// Kept so callers that genuinely want "zero techs" still read clearly.
+export const isUnowned = hasNobody;
+
 // Display. Never returns a bare string pretending one person owns it.
+// Returns '' when there is nobody — the caller decides whether that is worth
+// saying. Before a job is scheduled it is not, and 'Unassigned' on every card
+// in Open was noise.
 export function ownerLabel(assignments = []) {
   const techs = techsOn(assignments);
-  if (techs.length === 0) return 'Unassigned';
+  if (techs.length === 0) return '';
   if (techs.length === 1) return techs[0].name;
   if (techs.length === 2) return `${techs[0].name} + ${techs[1].name}`;
   return `${techs[0].name} +${techs.length - 1}`;

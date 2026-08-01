@@ -135,9 +135,21 @@ export function laneOf(job, ctx) {
   if (isClosed(status) || ACCOUNTING_QUEUE.includes(status)) return null;
 
   if (status === 'scheduled' && ctx) {
-    const when = job.scheduled_date ? new Date(job.scheduled_date) : null;
-    const today = ctx.today || new Date();
-    if (when && when < today && !ctx.hasTimeEntry) return 'needs_action';
+    // Both sides of this comparison must be LOCAL and both must be dates.
+    //
+    // `new Date('2026-08-01')` parses a bare date string as UTC midnight, while
+    // `new Date()` is local now. In Mountain time that made every job scheduled
+    // for TOMORROW drop into Needs action at 6:00 PM TODAY — the moment UTC
+    // rolled over. Same trap startTimestamp() in jobs.js documents.
+    //
+    // And today is not past. A job scheduled for today is today's work, not
+    // an overdue job, right up until the day ends.
+    const when = job.scheduled_date
+      ? new Date(`${job.scheduled_date}T00:00:00`)   // local midnight
+      : null;
+    const now = ctx.today || new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (when && when < startOfToday && !ctx.hasTimeEntry) return 'needs_action';
   }
 
   const lane = LANES.find(l => l.statuses.includes(status));
