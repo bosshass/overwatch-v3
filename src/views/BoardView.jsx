@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { LANES, laneOf, hasHold } from '../utils/lanes';
-import { ownerLabel, needsOwner, missingCalendar, isMultiTech, techsOn } from '../utils/ownership';
+import { techLabel, missingTech, missingCalendar, isMultiTech, techsOn } from '../utils/scheduledTechs';
 import { fetchBoard } from '../services/jobs';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
@@ -56,11 +56,11 @@ function Card({ job, onOpen }) {
       <div style={S.meta}>
         {/* Nobody assigned is only worth saying once the job is scheduled —
             before that it is the expected state of the whole lane. */}
-        {needsOwner(job) && <span style={S.alarm}>No tech assigned</span>}
+        {missingTech(job) && <span style={S.alarm}>No tech scheduled</span>}
         {missingCalendar(job) && <span style={S.alarm}>Not on a calendar</span>}
-        {ownerLabel(job.assignments) && (
+        {techLabel(job.assignments) && (
           <span style={S.owner}>
-            {ownerLabel(job.assignments)}
+            {techLabel(job.assignments)}
             {isMultiTech(job.assignments) && ` (${techs.length})`}
           </span>
         )}

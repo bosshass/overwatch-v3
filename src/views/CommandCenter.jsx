@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { LANES, laneOf, hasHold } from '../utils/lanes';
-import { needsOwner } from '../utils/ownership';
+import { missingTech } from '../utils/scheduledTechs';
 import { fetchBoard } from '../services/jobs';
 
 // ============================================================================
@@ -46,7 +46,7 @@ export default function CommandCenter({ email, onNavigate }) {
     for (const j of jobs) {
       const k = laneOf(j, { hasTimeEntry: j.hasTimeEntry });
       if (k && byLane[k] !== undefined) byLane[k]++;
-      if (needsOwner(j)) unowned++;
+      if (missingTech(j)) unowned++;
       if (hasHold(j)) held++;
     }
     return { byLane, unowned, held, total: jobs.length };

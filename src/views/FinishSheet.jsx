@@ -130,7 +130,7 @@ export default function FinishSheet({ job, actor, onClose, onFinished }) {
                     style={{ ...S.who, ...(on ? S.whoOn : {}) }}
                   >
                     <span style={{ ...S.dot, background: a.tech?.color || '#64748b' }} />
-                    {a.tech?.name || 'Unassigned'}
+                    {a.tech?.name || 'Tech record missing'}
                     {a.day_number > 1 && <span style={S.dayTag}>day {a.day_number}</span>}
                     {a.is_complete && <span style={S.doneTag}>done</span>}
                   </button>

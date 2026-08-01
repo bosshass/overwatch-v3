@@ -1,5 +1,17 @@
 // ============================================================================
-// ownership.js — who is on a job.
+// scheduledTechs.js — which technicians are SCHEDULED TO COMPLETE a job.
+//
+// Not "ownership". That word spanned two different relationships and named
+// neither:
+//
+//   scheduled to complete → job_assignments. A tech is booked, on a date, to
+//                           do the work. That is this file.
+//   tasked to             → tasks.assigned_to. A person is responsible for
+//                           moving something forward BEFORE, or without, any
+//                           schedule. Different table, different question.
+//
+// "Owner" also implies fault. Austin does not own a job; he is scheduled to
+// complete it. Nothing here should read as blame next to a person's name.
 //
 // ONE SOURCE. job_assignments. That is the whole design.
 //
@@ -29,23 +41,23 @@ export function techsOn(assignments = []) {
 
 export const isMultiTech = (assignments = []) => techsOn(assignments).length > 1;
 
-// ── Is nobody on this, and does that matter? ────────────────────────────────
-// These are two different questions and one word was answering both.
+// ── Is any tech scheduled, and does its absence matter? ─────────────────────
+// Two different questions; one word was answering both.
 //
 // A job in Open or Needs action with no tech is NORMAL — that is what those
 // lanes mean. Painting it red says "problem" about the entire backlog, which
 // trains people to ignore the colour. A job that is SCHEDULED with no tech is
-// a real fault: a date was written with nobody on it, and it will not appear
+// a real fault: a date was written with nobody booked, and it will not appear
 // in anyone's My Work.
 //
-// hasNobody() is the raw count. needsOwner() is the alarm. Only the second
-// should ever be red.
-export const hasNobody = (assignments = []) => techsOn(assignments).length === 0;
+// noTechScheduled() is the raw count. missingTech() is the alarm. Only the
+// second should ever be red.
+export const noTechScheduled = (assignments = []) => techsOn(assignments).length === 0;
 
-export function needsOwner(job) {
+export function missingTech(job) {
   if (!job) return false;
   if (job.status !== 'scheduled') return false;
-  return hasNobody(job.assignments);
+  return noTechScheduled(job.assignments);
 }
 
 // A scheduled job with no calendar event is the other half of the same fault:
@@ -54,14 +66,13 @@ export function missingCalendar(job) {
   return Boolean(job) && job.status === 'scheduled' && !job.scheduled_event_id;
 }
 
-// Kept so callers that genuinely want "zero techs" still read clearly.
-export const isUnowned = hasNobody;
 
-// Display. Never returns a bare string pretending one person owns it.
-// Returns '' when there is nobody — the caller decides whether that is worth
-// saying. Before a job is scheduled it is not, and 'Unassigned' on every card
-// in Open was noise.
-export function ownerLabel(assignments = []) {
+
+// Display: the names of the techs scheduled to complete it. Never a bare
+// string pretending one person owns it. Returns '' when nobody is scheduled —
+// the caller decides whether that is worth saying, and before a job is booked
+// it is not. 'Unassigned' on every card in Open was noise.
+export function techLabel(assignments = []) {
   const techs = techsOn(assignments);
   if (techs.length === 0) return '';
   if (techs.length === 1) return techs[0].name;
@@ -73,7 +84,7 @@ export function ownerLabel(assignments = []) {
 // Match on tech_id where possible; email only as a fallback, case-insensitive.
 const norm = s => (s || '').trim().toLowerCase();
 
-export function isOnJob(assignments = [], person = {}) {
+export function isScheduledOn(assignments = [], person = {}) {
   return techsOn(assignments).some(t =>
     (person.id && t.id === person.id) ||
     (person.email && norm(t.email) === norm(person.email))

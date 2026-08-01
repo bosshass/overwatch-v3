@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { laneOf, laneLabel, hasHold, moveOptions, gateFailures, softWarnings } from '../utils/lanes';
-import { techsOn, ownerLabel, isMultiTech } from '../utils/ownership';
+import { techsOn, techLabel, isMultiTech } from '../utils/scheduledTechs';
 import { fetchTimeEntries, moveTo, clearHold, addNote, fetchNotes } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 
@@ -221,7 +221,7 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
                 </div>
               ))}
               {isMultiTech(draft.assignments) && (
-                <div style={S.multi}>{ownerLabel(draft.assignments)}</div>
+                <div style={S.multi}>{techLabel(draft.assignments)}</div>
               )}
             </div>
           )}

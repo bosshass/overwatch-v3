@@ -238,7 +238,7 @@ export default function CalendarView({ actor }) {
                   {j.issue && <span style={S.rowIssue}>{j.issue}</span>}
                 </span>
                 <span style={S.rowRight}>
-                  <span style={S.rowTech}>{a.tech?.name || 'Unassigned'}</span>
+                  <span style={S.rowTech}>{a.tech?.name || 'Tech record missing'}</span>
                   {a.estimated_hours != null && (
                     <span style={S.rowHrs}>{a.estimated_hours}h</span>
                   )}
