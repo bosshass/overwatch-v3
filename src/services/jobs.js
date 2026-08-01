@@ -545,6 +545,18 @@ export async function markNonBillable(entryId, reason, actor) {
   return error ? { ok: false, reason: error.message } : { ok: true };
 }
 
+// The invoice number the work was billed on. Accounting-only; nothing on the
+// board writes it.
+export async function setInvoiceNumber(jobId, number, actor) {
+  const v = String(number || '').trim() || null;
+  const { error } = await supabase.from('jobs').update({
+    invoice_number: v,
+    updated_at: new Date().toISOString(),
+    updated_by: actor || null,
+  }).eq('id', jobId);
+  return error ? { ok: false, reason: error.message } : { ok: true };
+}
+
 export async function markBilled(entryId, actor) {
   const { error } = await supabase.from('time_entries').update({
     billed: true, billed_at: new Date().toISOString(),

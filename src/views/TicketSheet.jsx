@@ -255,6 +255,10 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
           : entries.map(t => (
               <div key={t.id} style={S.entry}>
                 <span>{t.tech_name || t.tech_email}</span>
+                <span style={S.entryDate}>
+                  {new Date(t.event_start || t.created_at).toLocaleDateString(undefined,
+                    { month: 'short', day: 'numeric' })}
+                </span>
                 <span style={S.entryHrs}>{((t.total_minutes || 0) / 60).toFixed(1)}h</span>
                 {t.billed && <span style={S.billed}>billed</span>}
                 {t.billable === false && <span style={S.nb}>not billable</span>}
@@ -349,6 +353,7 @@ const S = {
   techHrs: { color: '#64748b', fontSize: 12 },
   day: { color: '#64748b', fontSize: 11 },
   done: { color: '#14b8a6', fontSize: 11, fontWeight: 700 },
+  entryDate: { color: '#64748b', fontSize: 11, marginLeft: 'auto', marginRight: 8 },
   multi: { color: '#38bdf8', fontSize: 12, marginTop: 4 },
   schedule: { width: '100%', marginTop: 12, background: '#3b82f6', color: '#fff', border: 0,
               borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' },

@@ -125,7 +125,11 @@ export default function CustomersView({ onNewJob }) {
             </div>
             <div style={S.rowSub}>
               {c.address || 'No address'}
-              {c.is_active && <span style={S.mon}> · monitoring</span>}
+              {/* has_cms_monitoring, NOT is_active. v9 conflated the two and
+                  this line inherited it — 369 of 390 customers are is_active,
+                  5 actually have monitoring, so every one of them was labelled
+                  as a monitoring account. */}
+              {c.has_cms_monitoring && <span style={S.mon}> · monitoring</span>}
             </div>
           </button>
         ))}

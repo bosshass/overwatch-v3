@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../services/supabaseClient';
-import TicketSheet from './TicketSheet';
+import BillingSheet from './BillingSheet';
 
 // ============================================================================
 // BillingView — jobs that have left the board.
@@ -131,18 +131,12 @@ export default function BillingView({ actor }) {
           </div>
         )}
 
-      <div style={S.note}>
-        Billing module — stub. Jovelin QBO integration and invoice workflow
-        will be built here. For now, open a job to view details or move it.
-      </div>
-
       {open && (
-        <TicketSheet
+        <BillingSheet
           job={open}
           actor={actor}
           onClose={() => setOpen(null)}
           onChanged={() => { setOpen(null); load(); }}
-          onSchedule={() => {}}
         />
       )}
     </div>
