@@ -37,10 +37,16 @@ export function calendarForBooking(techCount) {
   return techCount > 1 ? CALENDARS.MULTI_TECH : CALENDARS.TECH_SCHEDULED;
 }
 
-// COMPLETED is the only write destination and is intentionally NOT set yet —
-// v3 has no completed calendar. Until it does, the move-on-billed step is a
-// no-op rather than a write to a live DRH calendar.
-export const COMPLETED_CALENDAR = null;
+// Where finished work goes to rest. Events are MOVED here — same event id,
+// description and history intact — so the tech calendars only ever show live
+// work. Two triggers, both in jobs.js:
+//   - a return trip is booked  → the original visit files here
+//   - Accounting closes the job → the event files here
+//
+// Deliberately NOT in SCANNED_CALENDARS: the board reads live work only, and
+// scanning Completed would drag every finished job back into view.
+export const COMPLETED_CALENDAR =
+  'c_a095f8a75a8e3fb1bb4b0f3a2232962af3ab55f05a49ced1e4338abcc865d3e9@group.calendar.google.com';
 
 export const isCompletedConfigured = () => Boolean(COMPLETED_CALENDAR);
 
