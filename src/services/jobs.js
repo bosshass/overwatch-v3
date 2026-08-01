@@ -16,7 +16,7 @@
 import { supabase } from './supabaseClient';
 import { canMoveTo, laneByKey, softWarnings, canClose } from '../utils/lanes';
 import { createEvent, updateEvent, moveEvent } from './calendar';
-import { calendarForBooking } from '../config/calendars';
+import { calendarForBooking, COMPLETED_CALENDAR, isCompletedConfigured } from '../config/calendars';
 
 const JOB_SELECT = `
   *,
@@ -136,6 +136,21 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
   if (!isReturnTrip && job.scheduled_event_id && job.scheduled_calendar_id) {
     existingEventId = job.scheduled_event_id;
   }
+
+  // A return trip does not move or overwrite the original event — that visit
+  // happened and its event is the record of it. Instead the original retires to
+  // the Completed calendar, clearing the tech's live schedule, and the return
+  // gets a fresh event below.
+  if (isReturnTrip && job.scheduled_event_id && job.scheduled_calendar_id
+      && isCompletedConfigured()) {
+    const retired = await moveEvent(
+      job.scheduled_calendar_id, job.scheduled_event_id, COMPLETED_CALENDAR
+    );
+    if (!retired.ok && !retired.gone) {
+      calWarning = `Previous visit not filed to Completed — ${retired.reason}`;
+    }
+  }
+
 
   const { error: delErr } = await supabase
     .from('job_assignments').delete().eq('job_id', job.id);
@@ -478,34 +493,26 @@ export async function finishWork(job, {
     changed_by: actor || null,
   });
 
-  // ── Write disposition back to the Google event ─────────────────────────
-  // The calendar event is where everyone else sees the job: Shana in Google
-  // Calendar, JR on his phone. Without this, "Needs another trip" exists only
-  // in Overwatch and whoever opens the event has no idea the visit happened.
+  // ── Calendar ─────────────────────────────────────────────────────────────
+  // The calendar is a SIGNAL, not a copy of the record.
+  //
+  // This used to dump tech, hours, disposition, notes and materials into the
+  // event description on every disposition. All of that already lives in
+  // time_entries, which is the billing source of truth — writing it to Google
+  // as well produced a second, staler copy of data nobody reads there, and
+  // buried the one thing that actually needs to be visible.
+  //
+  // The only thing the calendar needs to say is: this needs another trip.
+  // Everything else stays in the database.
   const calId = job.scheduled_calendar_id;
   const evId  = job.scheduled_event_id;
-  if (calId && evId) {
-    const lines = [
-      techName ? `Tech: ${techName}` : null,
-      `Logged: ${h}h`,
-      disposition === 'finished'
-        ? `Disposition: Finished — Good to go`
-          + (openAssignments.length
-              ? ` (${openAssignments.length} tech${openAssignments.length > 1 ? 's' : ''} still owe hours)`
-              : '')
-        : `Disposition: Needs another trip — ${returnReason}`,
-      notes ? `Notes: ${notes}` : null,
-      materials ? `Materials: ${materials}` : null,
-      '',
-      `Overwatch job ${String(job.id).slice(0, 8)}`,
-    ].filter(l => l !== null).join('\n');
 
-    // updateEvent is a PATCH — it preserves the event's title, date, and
-    // location and only overwrites the description. The booking title
-    // ("<Customer> — <issue>") stays unchanged on the calendar.
-    await updateEvent(calId, evId, { description: lines });
-    // calendar failure is not a reason to fail the disposition — the DB write
-    // already committed and the tech has moved on.
+  if (calId && evId && disposition === 'return') {
+    // Title flag, not a description dump — visible in month view without
+    // opening the event. Guarded so repeat dispositions do not stack it.
+    const base = (job.calendar_title || `${job.customer?.name || job.customer_name || 'Job'}`)
+      .replace(/^RETURN NEEDED — /, '');
+    await updateEvent(calId, evId, { title: `RETURN NEEDED — ${base}` });
   }
 
   return { ok: true, movedTo, openCount: openAssignments.length, hours: h };
@@ -563,5 +570,20 @@ export async function closeJob(job, actor) {
     job_id: job.id, from_status: job.status, to_status: 'closed',
     notes: 'Closed by Accounting', changed_by: actor || null,
   });
+
+  // Billed and closed — the event comes off the live tech calendars and files
+  // to Completed. Same move() as everywhere else: same event id, description
+  // and history intact, just no longer cluttering anyone's working week.
+  if (job.scheduled_event_id && job.scheduled_calendar_id && isCompletedConfigured()) {
+    const filed = await moveEvent(
+      job.scheduled_calendar_id, job.scheduled_event_id, COMPLETED_CALENDAR
+    );
+    if (filed.ok) {
+      await supabase.from('jobs')
+        .update({ scheduled_calendar_id: COMPLETED_CALENDAR })
+        .eq('id', job.id);
+    }
+  }
+
   return { ok: true };
 }
