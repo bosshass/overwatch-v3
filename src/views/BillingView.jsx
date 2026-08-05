@@ -15,7 +15,7 @@ import BillingSheet from './BillingSheet';
 
 const JOB_SELECT = `
   *,
-  customer:customers ( id, unique_id, name, address, phone, cs_number ),
+  customer:customers ( id, name, address, phone, is_monitored ),
   assignments:job_assignments (
     id, tech_id, day_number, scheduled_for, estimated_hours,
     is_complete, calendar_event_id,
@@ -106,7 +106,7 @@ export default function BillingView({ actor }) {
                   <div style={S.rowLeft}>
                     <div style={S.rowCust}>{c.name || 'No customer'}</div>
                     <div style={S.rowSub}>
-                      {c.unique_id && <span style={S.code}>{c.unique_id}</span>}
+                      {c.id && <span style={S.code}>{c.id}</span>}
                       {c.cs_number && <span style={S.code}>CS {c.cs_number}</span>}
                     </div>
                     {j.issue && <div style={S.rowIssue}>{j.issue}</div>}

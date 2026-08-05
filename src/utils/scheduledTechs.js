@@ -63,7 +63,10 @@ export function missingTech(job) {
 // A scheduled job with no calendar event is the other half of the same fault:
 // it exists in Overwatch and nowhere the field can see it.
 export function missingCalendar(job) {
-  return Boolean(job) && job.status === 'scheduled' && !job.scheduled_event_id;
+  // A booked job with no assignment carrying an event is a ghost booking.
+  const a = job?.assignments || [];
+  return Boolean(job) && job.status === 'scheduled'
+    && !a.some(x => x.event_state !== 'removed' && x.calendar_event_id);
 }
 
 

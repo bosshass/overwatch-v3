@@ -68,7 +68,7 @@ export default function BillingSheet({ job, actor, onClose, onChanged }) {
           <div>
             <div style={S.title}>{c.name || job.customer_name || 'No customer'}</div>
             <div style={S.sub}>
-              {c.unique_id}{c.cs_number ? ` · CS ${c.cs_number}` : ''}
+              {c.id}
             </div>
           </div>
           <button style={S.x} onClick={onClose}>✕</button>

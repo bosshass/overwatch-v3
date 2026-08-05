@@ -15,15 +15,16 @@
 
 import { supabase } from './supabaseClient';
 import { canMoveTo, laneByKey, softWarnings, canClose } from '../utils/lanes';
-import { createEvent, updateEvent, moveEvent } from './calendar';
-import { calendarForBooking, COMPLETED_CALENDAR, isCompletedConfigured } from '../config/calendars';
+import { createEvent, updateEvent, moveEvent, deleteEvent } from './calendar';
+import { calendarForTech, COMPLETED_CALENDAR, isCompletedConfigured, eventMarker } from '../config/calendars';
 
 const JOB_SELECT = `
   *,
-  customer:customers ( id, unique_id, name, address, phone, cs_number ),
+  customer:customers ( id, name, address, city, state, zip, phone, is_monitored ),
   assignments:job_assignments (
     id, tech_id, day_number, scheduled_for, estimated_hours,
-    is_complete, calendar_event_id,
+    is_complete, calendar_event_id, calendar_id, event_state,
+    returns_from_time_entry_id,
     tech:techs ( id, name, email, calendar_id, color )
   )
 `;
@@ -49,8 +50,33 @@ export async function fetchBoard() {
     withTime = new Set((te || []).map(t => t.job_id));
   }
 
-  return jobs.map(j => ({ ...j, hasTimeEntry: withTime.has(j.id) }));
+  // Dates come from v_job_schedule, which derives them from job_assignments.
+  // jobs holds no dates: a job with JR on Monday and Trevor's return on Friday
+  // has two, and one column cannot represent that honestly.
+  let sched = {};
+  if (ids.length) {
+    const { data: vs } = await supabase
+      .from('v_job_schedule')
+      .select('job_id, first_scheduled, next_scheduled, last_scheduled, active_trips, techs_assigned')
+      .in('job_id', ids);
+    for (const r of vs || []) sched[r.job_id] = r;
+  }
+
+  return jobs.map(j => ({
+    ...j,
+    hasTimeEntry: withTime.has(j.id),
+    ...(sched[j.id] || {
+      first_scheduled: null, next_scheduled: null, last_scheduled: null,
+      active_trips: 0, techs_assigned: 0,
+    }),
+  }));
 }
+
+// ctx for laneOf(): stranded = scheduled, date passed, nothing logged.
+export const laneCtx = job => ({
+  hasTimeEntry: Boolean(job?.hasTimeEntry),
+  nextScheduled: job?.next_scheduled || job?.first_scheduled || null,
+});
 
 export async function fetchJob(id) {
   const { data, error } = await supabase
@@ -77,14 +103,8 @@ export async function moveTo(job, laneKey, { actor, note } = {}) {
   const target = laneByKey(laneKey).target;
   const from = job.status;
 
-  const patch = { status: target, updated_at: new Date().toISOString(), updated_by: actor || null };
+  const patch = { status: target, updated_at: new Date().toISOString() };
 
-  // Leaving a hold behind clears it — a hold is a badge, not a destination,
-  // and a stale one is how v9 produced ghost bookings.
-  if (laneKey !== 'open' && laneKey !== 'returns') {
-    patch.tentative_date = null;
-    patch.tentative_event_id = null;
-  }
 
   const { error } = await supabase.from('jobs').update(patch).eq('id', job.id);
   if (error) return { ok: false, reason: error.message };
@@ -116,152 +136,176 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
   if (!techs.length) return { ok: false, reason: 'Pick at least one tech' };
   if (!date) return { ok: false, reason: 'Pick a date' };
 
-  // Rebooking moves the EXISTING event. It does not destroy and replace it.
+  // ── RESCHEDULE vs RETURN ────────────────────────────────────────────────
+  // These are opposite operations and are never inferred from state:
   //
-  // v9 deleted the old event and created a new one, which threw away everything
-  // the event had accumulated — access codes, gate instructions, whatever Shana
-  // or a tech had typed into the description, and the event's own history.
-  // A reschedule is a change of date, not a different piece of work.
+  //   RESCHEDULE — the trip has not happened. PATCH the existing event on each
+  //     tech's calendar. Same assignment row, same event id, same day_number.
+  //     An assignment that already has time logged against it CANNOT be
+  //     rescheduled — the work happened on that date and moving it rewrites
+  //     which period it bills in.
   //
-  // Two cases, because headcount decides which calendar a booking lives on:
-  //   same calendar      → PATCH the times below, event untouched otherwise
-  //   different calendar → move() first; Google keeps the id and all content
+  //   RETURN — a trip happened and more work is needed. Every existing event
+  //     stays exactly where it is. New assignment rows are added at
+  //     day_number + 1 with fresh events, linked back to the time entry whose
+  //     disposition asked for the return.
   //
-  // Note this is the RESCHEDULE path only. A return trip is a separate visit
-  // and gets its own event — it must never move or overwrite the original.
-  let calWarning = null;
-  let existingEventId = null;
+  // A tech may differ between trips: JR diagnoses, Trevor returns with the
+  // part. Tech is per assignment row, so this needs no special handling —
+  // but each event goes to THAT tech's calendar, never a shared one.
   const isReturnTrip = job.status === 'return_pending';
+  const warnings = [];
 
-  if (!isReturnTrip && job.scheduled_event_id && job.scheduled_calendar_id) {
-    existingEventId = job.scheduled_event_id;
+  const { data: existing } = await supabase
+    .from('job_assignments')
+    .select('id, tech_id, day_number, scheduled_for, calendar_event_id, calendar_id, event_state')
+    .eq('job_id', job.id);
+
+  const prior = existing || [];
+  const maxDay = prior.length ? Math.max(...prior.map(a => a.day_number || 1)) : 0;
+
+  // Which time entry asked for this return, if any.
+  let returnsFrom = null;
+  if (isReturnTrip) {
+    const { data: te } = await supabase
+      .from('time_entries')
+      .select('id, created_at')
+      .eq('job_id', job.id)
+      .eq('disposition', 'return')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    returnsFrom = te?.[0]?.id || null;
   }
 
-  // A return trip does not move or overwrite the original event — that visit
-  // happened and its event is the record of it. Instead the original retires to
-  // the Completed calendar, clearing the tech's live schedule, and the return
-  // gets a fresh event below.
-  if (isReturnTrip && job.scheduled_event_id && job.scheduled_calendar_id
-      && isCompletedConfigured()) {
-    const retired = await moveEvent(
-      job.scheduled_calendar_id, job.scheduled_event_id, COMPLETED_CALENDAR
-    );
-    if (!retired.ok && !retired.gone) {
-      calWarning = `Previous visit not filed to Completed — ${retired.reason}`;
+  // Reschedule guard: refuse to move a trip that already happened.
+  if (!isReturnTrip && prior.length) {
+    const { data: logged } = await supabase
+      .from('time_entries').select('id').eq('job_id', job.id).limit(1);
+    if (logged?.length) {
+      return {
+        ok: false,
+        reason: 'This job has time logged. Book a return trip instead — rescheduling would move work that already happened.',
+      };
     }
   }
 
+  const customer = job.customer?.name || job.customer_name || 'No customer';
+  const what = job.issue || 'Service';
+  const location = job.customer?.address || job.address || '';
 
-  const { error: delErr } = await supabase
-    .from('job_assignments').delete().eq('job_id', job.id);
-  if (delErr) return { ok: false, reason: delErr.message };
-
-  // scheduled_for carries the real start instant, not a bare date. Day 2 of a
-  // multi-day job starts the next calendar day at the same time.
-  const rows = techs.map(t => {
+  const rows = [];
+  for (const t of techs) {
     const dayOffset = (Number(t.day) || 1) - 1;
     const d = new Date(`${date}T00:00:00`);
     d.setDate(d.getDate() + dayOffset);
-    const p = n => String(n).padStart(2, '0');
-    const dayStr = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    return {
+    const p2 = n => String(n).padStart(2, '0');
+    const dayStr = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    const startISO = startTimestamp(dayStr, t.startTime || startTime);
+    const hours = Number(t.hours) || Number(job.estimated_hours) || 2;
+    const endISO = startISO
+      ? new Date(new Date(startISO).getTime() + hours * 3600 * 1000).toISOString()
+      : null;
+
+    // THE calendar for this event is THIS tech's calendar. No fallback.
+    const calendarId = calendarForTech(t);
+    if (!calendarId) {
+      warnings.push(`${t.name || t.id} has no calendar configured — booked without an event`);
+    }
+
+    const dayNumber = isReturnTrip ? maxDay + (Number(t.day) || 1) : (Number(t.day) || 1);
+
+    // Reschedule reuses this tech's existing row+event for the same day.
+    const reuse = !isReturnTrip
+      ? prior.find(a => a.tech_id === t.id && (a.day_number || 1) === dayNumber
+                        && a.event_state !== 'removed')
+      : null;
+
+    let eventId = reuse?.calendar_event_id || null;
+    if (calendarId && startISO && endISO) {
+      let made;
+      if (reuse?.calendar_event_id && reuse.calendar_id) {
+        // Same tech, same slot -> PATCH in place. Title and description are not
+        // sent: eventBody() omits undefined, so gate codes and notes survive.
+        if (reuse.calendar_id !== calendarId) {
+          const moved = await moveEvent(reuse.calendar_id, reuse.calendar_event_id, calendarId);
+          made = moved.ok
+            ? await updateEvent(calendarId, moved.eventId, { startISO, endISO })
+            : moved;
+        } else {
+          made = await updateEvent(calendarId, reuse.calendar_event_id, { startISO, endISO });
+        }
+        if (made?.gone) made = null;   // deleted in Google — fall through
+      }
+      if (!made) {
+        made = await createEvent(calendarId, {
+          title: `${customer} — ${what}`,
+          description: [
+            t.name ? `Tech: ${t.name}` : null,
+            isReturnTrip ? 'Return trip' : null,
+            `Booked by ${actor || 'Overwatch'}`,
+          ].filter(Boolean).join('\n'),
+          startISO, endISO, location,
+          extendedProperties: eventMarker(job.id),
+        });
+      }
+      if (made?.ok) eventId = made.eventId;
+      else warnings.push(made?.reason || 'calendar write failed');
+    }
+
+    rows.push({
+      _reuseId: reuse?.id || null,
       job_id: job.id,
       tech_id: t.id,
-      day_number: t.day || 1,
-      scheduled_for: startTimestamp(dayStr, t.startTime || startTime),
+      day_number: dayNumber,
+      scheduled_for: startISO,
       estimated_hours: t.hours ?? job.estimated_hours ?? null,
-      created_by: actor || null,
-    };
-  });
+      calendar_event_id: eventId,
+      calendar_id: eventId ? calendarForTech(t) : null,
+      calendar_synced_at: eventId ? new Date().toISOString() : null,
+      event_state: 'active',
+      returns_from_time_entry_id: isReturnTrip ? returnsFrom : null,
+    });
+  }
 
-  const { data: inserted, error: insErr } = await supabase
-    .from('job_assignments').insert(rows).select('id, day_number, scheduled_for');
-  if (insErr) return { ok: false, reason: insErr.message };
-
-  // ── Calendar write (3.1.0) ─────────────────────────────────────────────
-  // One event for the booking, on the tech or multi-tech calendar depending on
-  // headcount. The DB write already succeeded at this point, so a calendar
-  // failure is reported as a warning — never a silent swallow, and never a
-  // rollback that would lose the booking the operator just made.
-  const calendarId = calendarForBooking(techs.length);
-  const firstStart = rows[0]?.scheduled_for;
-  const longestHours = Math.max(...techs.map(t => Number(t.hours) || 0), 0) || 2;
-  const endISO = firstStart
-    ? new Date(new Date(firstStart).getTime() + longestHours * 3600 * 1000).toISOString()
-    : null;
-
-  const customer = job.customer?.name || job.customer_name || 'No customer';
-  const what = job.issue || job.job_type || 'Service';
-  const techNames = techs.map(t => t.name).filter(Boolean);
-
-  let eventId = null;
-  if (firstStart && endISO) {
-    // Rescheduling: relocate if headcount changed the target calendar, then
-    // PATCH only the times. Title, location and description are deliberately
-    // NOT sent — eventBody() omits undefined fields, so everything already on
-    // the event survives. Overwriting the description here would wipe exactly
-    // the notes this change exists to protect.
-    let made;
-    if (existingEventId) {
-      const moved = await moveEvent(job.scheduled_calendar_id, existingEventId, calendarId);
-      if (moved.ok) {
-        made = await updateEvent(calendarId, moved.eventId, { startISO: firstStart, endISO });
-      } else if (moved.gone) {
-        // Somebody deleted it in Google. Fall through and make a fresh one.
-        existingEventId = null;
-        calWarning = 'Previous calendar event was missing — created a new one';
-      } else {
-        made = moved;
+  // Techs dropped from a reschedule: their event comes off the calendar, but
+  // the row and its hours stay. event_state records why it has no event.
+  if (!isReturnTrip) {
+    const keeping = new Set(rows.filter(r => r._reuseId).map(r => r._reuseId));
+    for (const a of prior) {
+      if (keeping.has(a.id) || a.event_state === 'removed') continue;
+      if (a.calendar_id && a.calendar_event_id) {
+        await deleteEvent(a.calendar_id, a.calendar_event_id);
       }
-    }
-
-    if (!existingEventId) {
-      made = await createEvent(calendarId, {
-        title: `${customer} — ${what}`,
-        description: [
-          techNames.length ? `Tech: ${techNames.join(', ')}` : null,
-          `Booked by ${actor || 'Overwatch'}`,
-          `Overwatch job ${String(job.id).slice(0, 8)}`,
-        ].filter(Boolean).join('\n'),
-        startISO: firstStart,
-        endISO,
-        location: job.customer?.address || job.address || '',
-      });
-    }
-
-    if (made.ok) {
-      eventId = made.eventId;
-      const ids = (inserted || []).map(r => r.id);
-      if (ids.length) {
-        await supabase.from('job_assignments')
-          .update({ calendar_event_id: eventId, calendar_synced_at: new Date().toISOString() })
-          .in('id', ids);
-      }
-    } else {
-      calWarning = made.reason;
+      await supabase.from('job_assignments').update({
+        event_state: 'removed',
+        removed_at: new Date().toISOString(),
+        removed_by: actor || null,
+      }).eq('id', a.id);
     }
   }
 
-  const { error: jobErr } = await supabase.from('jobs').update({
-    status: 'scheduled',
-    scheduled_date: date,
-    tentative_date: null,
-    tentative_event_id: null,
-    is_multi_day: new Set(techs.map(t => t.day || 1)).size > 1,
-    scheduled_event_id: eventId,
-    scheduled_calendar_id: eventId ? calendarId : null,
-    updated_at: new Date().toISOString(),
-    updated_by: actor || null,
-  }).eq('id', job.id);
+  for (const r of rows) {
+    const { _reuseId, ...row } = r;
+    const res = _reuseId
+      ? await supabase.from('job_assignments').update(row).eq('id', _reuseId)
+      : await supabase.from('job_assignments').insert(row);
+    if (res.error) return { ok: false, reason: res.error.message };
+  }
+
+  // jobs holds NO dates and NO calendar pointers. Schedule is derived from
+  // job_assignments via v_job_schedule.
+  const { error: jobErr } = await supabase.from('jobs')
+    .update({ status: 'scheduled', updated_at: new Date().toISOString() })
+    .eq('id', job.id);
   if (jobErr) return { ok: false, reason: jobErr.message };
 
   await supabase.from('job_history').insert({
     job_id: job.id, from_status: job.status, to_status: 'scheduled',
-    notes: `Booked ${techs.length} tech${techs.length > 1 ? 's' : ''} for ${date} at ${startTime}`,
+    notes: `${isReturnTrip ? 'Return booked' : 'Booked'} ${techs.length} tech${techs.length > 1 ? 's' : ''} for ${date} at ${startTime}`,
     changed_by: actor || null,
   });
 
-  return { ok: true, techCount: techs.length, eventId, calWarning };
+  return { ok: true, techCount: techs.length, isReturnTrip, calWarning: warnings.join('; ') || null };
 }
 
 // ── The tech's own day ───────────────────────────────────────────────────────
@@ -281,9 +325,8 @@ export async function fetchMyDay(techId, dayISO) {
       id, job_id, tech_id, day_number, scheduled_for, estimated_hours,
       is_complete, actual_hours, calendar_event_id,
       job:jobs (
-        id, status, issue, job_type, priority, estimated_hours, due_date,
-        scheduled_date, scheduled_event_id, scheduled_calendar_id, customer_id,
-        customer:customers ( id, unique_id, cs_number, name, address, city, state, zip, phone )
+        id, status, issue, priority, estimated_hours, due_date, customer_id,
+        customer:customers ( id, name, address, city, state, zip, phone )
       )
     `)
     .eq('tech_id', techId)
@@ -306,8 +349,8 @@ export async function fetchScheduleRange(fromISO, toISO) {
       is_complete, calendar_event_id,
       tech:techs ( id, name, color, email ),
       job:jobs (
-        id, status, issue, job_type, priority, estimated_hours, scheduled_date,
-        customer:customers ( id, unique_id, cs_number, name, address, city, phone )
+        id, status, issue, priority, estimated_hours,
+        customer:customers ( id, name, address, city, phone )
       )
     `)
     .gte('scheduled_for', fromISO)
@@ -402,6 +445,19 @@ export async function finishWork(job, {
 } = {}) {
   const h = Number(hours);
   if (!h || h <= 0) return { ok: false, reason: 'Enter the hours worked' };
+
+  // The trip being closed out. Its (calendar_id, calendar_event_id) pair is what
+  // the time entry records and what retires to Completed — there is no
+  // job-level event any more.
+  let assignment = null;
+  if (assignmentId) {
+    const { data } = await supabase
+      .from('job_assignments')
+      .select('id, tech_id, day_number, scheduled_for, calendar_id, calendar_event_id, event_state')
+      .eq('id', assignmentId)
+      .single();
+    assignment = data || null;
+  }
   if (disposition === 'return' && !String(returnReason || '').trim()) {
     return { ok: false, reason: 'Say why it needs another trip' };
   }
@@ -420,9 +476,9 @@ export async function finishWork(job, {
     disposition,
     notes: notes || null,
     materials: materials || null,
-    calendar_event_id: job.scheduled_event_id || null,
-    calendar_id: job.scheduled_calendar_id || null,
-    event_start: job.scheduled_date ? new Date(`${job.scheduled_date}T00:00:00`).toISOString() : null,
+    calendar_event_id: assignment?.calendar_event_id || null,
+    calendar_id: assignment?.calendar_id || null,
+    event_start: assignment?.scheduled_for || null,
   });
   if (teErr) return { ok: false, reason: teErr.message };
 
@@ -432,7 +488,6 @@ export async function finishWork(job, {
       is_complete: disposition === 'finished',
       actual_hours: h,
       completion_notes: notes || null,
-      time_out: new Date().toISOString(),
     }).eq('id', assignmentId);
   }
 
@@ -463,7 +518,6 @@ export async function finishWork(job, {
     await supabase.from('jobs').update({
       status: 'return_pending',
       updated_at: new Date().toISOString(),
-      updated_by: actor || null,
     }).eq('id', job.id);
   } else {
     // 'finished' — the work is done. Move it, and flag any tech who still
@@ -471,12 +525,7 @@ export async function finishWork(job, {
     movedTo = 'good_to_go';
     await supabase.from('jobs').update({
       status: 'good_to_go',
-      needs_notes: openAssignments.length > 0,
-      needs_notes_flagged_at: openAssignments.length > 0
-        ? new Date().toISOString()
-        : null,
       updated_at: new Date().toISOString(),
-      updated_by: actor || null,
     }).eq('id', job.id);
   }
 
@@ -504,8 +553,8 @@ export async function finishWork(job, {
   //
   // The only thing the calendar needs to say is: this needs another trip.
   // Everything else stays in the database.
-  const calId = job.scheduled_calendar_id;
-  const evId  = job.scheduled_event_id;
+  const calId = assignment?.calendar_id;
+  const evId  = assignment?.calendar_event_id;
 
   if (calId && evId && disposition === 'return') {
     // Title flag, not a description dump — visible in month view without
@@ -519,19 +568,7 @@ export async function finishWork(job, {
 }
 
 // A hold is a badge. It does not move the card out of its lane.
-export async function hold(job, { date, actor } = {}) {
-  const { error } = await supabase.from('jobs')
-    .update({ tentative_date: date, updated_at: new Date().toISOString(), updated_by: actor || null })
-    .eq('id', job.id);
-  return error ? { ok: false, reason: error.message } : { ok: true };
-}
 
-export async function clearHold(job, { actor } = {}) {
-  const { error } = await supabase.from('jobs')
-    .update({ tentative_date: null, tentative_event_id: null, updated_by: actor || null })
-    .eq('id', job.id);
-  return error ? { ok: false, reason: error.message } : { ok: true };
-}
 
 // ── Accounting ───────────────────────────────────────────────────────────────
 // Not reachable from any field screen.
@@ -552,7 +589,6 @@ export async function setInvoiceNumber(jobId, number, actor) {
   const { error } = await supabase.from('jobs').update({
     invoice_number: v,
     updated_at: new Date().toISOString(),
-    updated_by: actor || null,
   }).eq('id', jobId);
   return error ? { ok: false, reason: error.message } : { ok: true };
 }
@@ -573,8 +609,8 @@ export async function closeJob(job, actor) {
   if (!verdict.ok) return { ok: false, reason: verdict.reason };
 
   const { error } = await supabase.from('jobs').update({
-    status: 'closed', completed_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(), updated_by: actor || null,
+    status: 'closed',
+    updated_at: new Date().toISOString(),
   }).eq('id', job.id);
   if (error) return { ok: false, reason: error.message };
 
@@ -586,14 +622,23 @@ export async function closeJob(job, actor) {
   // Billed and closed — the event comes off the live tech calendars and files
   // to Completed. Same move() as everywhere else: same event id, description
   // and history intact, just no longer cluttering anyone's working week.
-  if (job.scheduled_event_id && job.scheduled_calendar_id && isCompletedConfigured()) {
-    const filed = await moveEvent(
-      job.scheduled_calendar_id, job.scheduled_event_id, COMPLETED_CALENDAR
-    );
-    if (filed.ok) {
-      await supabase.from('jobs')
-        .update({ scheduled_calendar_id: COMPLETED_CALENDAR })
-        .eq('id', job.id);
+  // Billing closes the job -> every active event files to Completed. Rows with
+  // event_state 'removed' have no event to move; their hours still billed.
+  if (isCompletedConfigured()) {
+    const { data: assigns } = await supabase
+      .from('job_assignments')
+      .select('id, calendar_id, calendar_event_id')
+      .eq('job_id', job.id)
+      .eq('event_state', 'active');
+    for (const a of assigns || []) {
+      if (!a.calendar_id || !a.calendar_event_id) continue;
+      const moved = await moveEvent(a.calendar_id, a.calendar_event_id, COMPLETED_CALENDAR);
+      if (moved.ok) {
+        await supabase.from('job_assignments').update({
+          completed_event_id: moved.eventId,
+          billed_at: new Date().toISOString(),
+        }).eq('id', a.id);
+      }
     }
   }
 

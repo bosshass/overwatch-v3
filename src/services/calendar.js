@@ -5,9 +5,13 @@
 // replaced them, so the scheduler had no idea what was already booked. This
 // restores the read half only.
 //
-// WRITES ARE NOT IMPLEMENTED HERE ON PURPOSE. Per calendars.js, the only write
-// v3 is ever supposed to make is moving an event to COMPLETED, and
-// COMPLETED_CALENDAR is still null. Nothing in this file mutates Google.
+// WRITES: create / update / move / delete are implemented and used by book()
+// and closeJob(). Every event Overwatch creates carries the owJobId marker.
+//
+// CALENDARS ARE RESOLVED FROM THE techs TABLE, never hardcoded. Passing no
+// `calendars` to fetchEvents() reads every active tech's own calendar. The
+// PTO calendar is deliberately excluded — it is availability, and an event on
+// it must never become a job.
 //
 // One 401 handling rule: a dead token returns { authExpired: true } rather than
 // throwing. The scheduler shows "reconnect" instead of an empty grid, because
@@ -16,23 +20,20 @@
 // ============================================================================
 
 import { getAccessToken } from './useAuth';
-import { CALENDARS, SCANNED_CALENDARS } from '../config/calendars';
+import { supabase } from './supabaseClient';
+import { scannedCalendars, COMPLETED_CALENDAR, PTO_CALENDAR } from '../config/calendars';
 
 // Display names, so an event chip can say where it came from.
-export const CALENDAR_NAMES = {
-  [CALENDARS.TECH_SCHEDULED]: 'Tech',
-  [CALENDARS.MULTI_TECH]: 'Multi-tech',
-  [CALENDARS.INTERNAL]: 'Internal',
-};
 
 // Read these when drawing the scheduler. INTERNAL is included: admin time is
 // not billable but it still occupies a human being, and a scheduler that hides
 // it will cheerfully book over it.
-export const SCHEDULER_CALENDARS = [...SCANNED_CALENDARS, CALENDARS.INTERNAL];
+// Calendars are resolved from the techs table now — pass them in.
+export const SCHEDULER_CALENDARS = [];
 
 const API = 'https://www.googleapis.com/calendar/v3/calendars';
 
-function normalize(ev, calendarId) {
+function normalize(ev, calendarId, calendarName) {
   // All-day events carry `date`; timed events carry `dateTime`.
   const startRaw = ev.start?.dateTime || ev.start?.date || null;
   const endRaw = ev.end?.dateTime || ev.end?.date || null;
@@ -41,7 +42,10 @@ function normalize(ev, calendarId) {
   return {
     id: ev.id,
     calendarId,
-    calendarName: CALENDAR_NAMES[calendarId] || 'Calendar',
+    calendarName: calendarName || 'Calendar',
+    // The marker. Null means a tech booked this by hand -> orphan queue,
+    // never an automatic job.
+    owJobId: ev?.extendedProperties?.private?.owJobId || null,
     title: ev.summary || '(no title)',
     where: ev.location || '',
     start: startRaw,
@@ -61,7 +65,7 @@ export function localDay(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-async function listOne(calendarId, timeMin, timeMax, token) {
+async function listOne(calendarId, timeMin, timeMax, token, calName) {
   const qs = new URLSearchParams({
     timeMin: timeMin.toISOString(),
     timeMax: timeMax.toISOString(),
@@ -76,22 +80,35 @@ async function listOne(calendarId, timeMin, timeMax, token) {
   if (res.status === 403 || res.status === 404) {
     // Not shared with this account, or the ID is wrong. Name it — a silent
     // skip here is how v9 shipped a wrong Tent calendar ID for weeks.
-    return { events: [], error: `${CALENDAR_NAMES[calendarId] || calendarId}: ${res.status}` };
+    return { events: [], error: `${calName || calendarId}: ${res.status}` };
   }
   if (!res.ok) return { events: [], error: `${res.status} ${res.statusText}` };
 
   const data = await res.json();
-  return { events: (data.items || []).map(e => normalize(e, calendarId)) };
+  return { events: (data.items || []).map(ev => normalize(ev, calendarId, calName)) };
 }
 
 // Fetch across every scheduler calendar at once.
 // → { events, authExpired, errors }
-export async function fetchEvents({ from, to, calendars = SCHEDULER_CALENDARS }) {
+export async function fetchEvents({ from, to, calendars = null }) {
   const token = getAccessToken();
   if (!token) return { events: [], authExpired: true, errors: [] };
 
+  // No explicit list -> every active tech's own calendar, from the techs table.
+  // An empty list here would render an empty grid, and an empty grid reads as
+  // "nobody is booked" — the one wrong answer that causes a double-booking.
+  let ids = calendars;
+  const nameFor = {};
+  if (!ids) {
+    const { data } = await supabase
+      .from('techs').select('name, calendar_id, is_active').eq('is_active', true);
+    for (const t of data || []) if (t.calendar_id) nameFor[t.calendar_id] = t.name;
+    ids = scannedCalendars((data || []).map(t => ({ ...t, is_active: true })));
+  }
+  if (!ids.length) return { events: [], authExpired: false, errors: ['No tech calendars configured'] };
+
   const results = await Promise.all(
-    calendars.map(id => listOne(id, from, to, token))
+    ids.map(id => listOne(id, from, to, token, nameFor[id]))
   );
 
   const events = results.flatMap(r => r.events);
@@ -156,7 +173,9 @@ export function weekStart(d = new Date()) {
 // via holdTitle() in config/calendars.js.
 // ============================================================================
 
-function eventBody({ title, description, startISO, endISO, location }) {
+// extendedProperties carries owJobId — the marker that separates an Overwatch
+// event from a tech's own manual booking.
+function eventBody({ title, description, startISO, endISO, location, extendedProperties }) {
   // Only include fields that are explicitly provided. A PATCH with
   // start: { dateTime: undefined } wipes the event time — the caller
   // should only pass what it intends to change.
@@ -166,6 +185,9 @@ function eventBody({ title, description, startISO, endISO, location }) {
   if (location !== undefined)    body.location    = location    || '';
   if (startISO !== undefined)    body.start       = { dateTime: startISO };
   if (endISO !== undefined)      body.end         = { dateTime: endISO };
+  // The owJobId marker. Without it a sync cannot tell an Overwatch event from a
+  // tech's own manual booking, and drift detection becomes guesswork on titles.
+  if (extendedProperties !== undefined) body.extendedProperties = extendedProperties;
   return body;
 }
 
@@ -245,4 +267,65 @@ export async function deleteEvent(calendarId, eventId) {
   if (res.status === 401) return { ok: false, authExpired: true, reason: 'Google session expired' };
   if (res.ok || res.status === 404 || res.status === 410) return { ok: true };
   return { ok: false, reason: `Calendar ${res.status} ${res.statusText}` };
+}
+
+
+// ── Access preflight ─────────────────────────────────────────────────────────
+// The signed-in account must be able to READ every active tech's calendar to
+// build the board, and WRITE to it to book. Those are different grants in
+// Google: "See all event details" is read; booking needs "Make changes to
+// events". A tech signed in on their own account will usually have read on the
+// team calendars and write on none of them.
+//
+// Without this check the first symptom is a booking that silently does not
+// appear on anyone's calendar — the exact disagreement between board and
+// calendar that produced v9's ghost bookings. Run it from a settings screen,
+// or on first load for office roles.
+//
+// → [{ calendarId, label, role, read, write, reason }]
+export async function checkCalendarAccess() {
+  const token = getAccessToken();
+  if (!token) return { authExpired: true, results: [] };
+
+  const { data: techs } = await supabase
+    .from('techs').select('name, calendar_id, kind, is_active').eq('is_active', true);
+
+  const targets = [
+    ...(techs || [])
+      .filter(t => t.calendar_id)
+      .map(t => ({ calendarId: t.calendar_id, label: t.name, role: t.kind === 'field' ? 'tech' : 'function', needsWrite: true })),
+    { calendarId: COMPLETED_CALENDAR, label: 'Completed', role: 'archive', needsWrite: true },
+    { calendarId: PTO_CALENDAR,       label: 'PTO',       role: 'availability', needsWrite: false },
+  ].filter(t => t.calendarId);
+
+  const results = await Promise.all(targets.map(async t => {
+    // accessRole comes back on the calendarList entry: reader | writer | owner.
+    const res = await fetch(
+      `https://www.googleapis.com/calendar/v3/users/me/calendarList/${encodeURIComponent(t.calendarId)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (res.status === 401) return { ...t, read: false, write: false, reason: 'signed out' };
+    if (!res.ok) {
+      return { ...t, read: false, write: false,
+               reason: res.status === 404 ? 'not shared with this account' : `HTTP ${res.status}` };
+    }
+    const cal = await res.json();
+    const role = cal.accessRole;                       // reader | writer | owner | freeBusyReader
+    const read  = ['reader', 'writer', 'owner'].includes(role);
+    const write = ['writer', 'owner'].includes(role);
+    return {
+      ...t, read, write, accessRole: role,
+      reason: t.needsWrite && !write
+        ? `read-only — cannot book ${t.label}`
+        : (!read ? 'no access' : null),
+    };
+  }));
+
+  return {
+    authExpired: false,
+    results,
+    ok: results.every(r => r.read && (!r.needsWrite || r.write)),
+    // PTO is read-only BY DESIGN: availability, never a source of jobs.
+    ptoWritable: results.find(r => r.role === 'availability')?.write === true,
+  };
 }

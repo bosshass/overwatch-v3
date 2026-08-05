@@ -7,7 +7,7 @@
 //      Good to Go.
 //
 //   2. TENTATIVE IS NOT A LANE. It is a badge on a card that stays in Open or
-//      Returns. v9 let tentative_date outrank status and yank the card into its
+//      Returns. Tentative was dropped from the V3 schema entirely (not MVP).
 //      own column. Inverted here — see hasHold().
 //
 //   3. "Bill it" is GOOD TO GO. Nobody in the field decides what gets billed —
@@ -64,8 +64,7 @@ export const LANES = [
     target: 'ready_to_schedule',
     statuses: ['ready_to_schedule'],
     means: 'Ready — someone needs to put it on a calendar',
-    allowsHold: true,
-    entryGate: ['priority', 'estimated_hours'],
+        entryGate: ['priority', 'estimated_hours'],
   },
   {
     key: 'needs_action',
@@ -95,8 +94,7 @@ export const LANES = [
     target: 'return_pending',
     statuses: ['return_pending'],
     means: 'Work started — needs another trip. Say why.',
-    allowsHold: true,
-    requiresReason: true,
+        requiresReason: true,
   },
   {
     key: 'estimates',
@@ -144,9 +142,9 @@ export function laneOf(job, ctx) {
     //
     // And today is not past. A job scheduled for today is today's work, not
     // an overdue job, right up until the day ends.
-    const when = job.scheduled_date
-      ? new Date(`${job.scheduled_date}T00:00:00`)   // local midnight
-      : null;
+    // jobs holds no dates. The schedule lives on job_assignments; ctx.nextScheduled
+    // is supplied by the caller from v_job_schedule.
+    const when = ctx.nextScheduled ? new Date(ctx.nextScheduled) : null;
     const now = ctx.today || new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     if (when && when < startOfToday && !ctx.hasTimeEntry) return 'needs_action';
@@ -156,7 +154,9 @@ export function laneOf(job, ctx) {
   return lane ? lane.key : 'needs_action';   // unknown status = someone look at it
 }
 
-export const hasHold = job => Boolean(job?.tentative_date);
+// Tentative holds were dropped from the schema (not MVP). Kept as a stub so
+// callers do not break; always false until a hold model exists.
+export const hasHold = () => false;
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 export function gateFailures(job, targetLaneKey) {

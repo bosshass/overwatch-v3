@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { laneOf, laneLabel, hasHold, moveOptions, gateFailures, softWarnings } from '../utils/lanes';
 import { techsOn, techLabel, isMultiTech } from '../utils/scheduledTechs';
-import { fetchTimeEntries, moveTo, clearHold, addNote, fetchNotes } from '../services/jobs';
+import { fetchTimeEntries, moveTo, addNote, fetchNotes } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 
 // ============================================================================
@@ -38,7 +38,8 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
 
   const set = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setDirty(true); };
 
-  const lane = laneOf(draft, { hasTimeEntry: entries.length > 0 });
+  const lane = laneOf(draft, { hasTimeEntry: entries.length > 0,
+    nextScheduled: draft.next_scheduled || draft.first_scheduled || null });
   const techs = techsOn(draft.assignments);
   const warnings = softWarnings(draft);
   const openGate = gateFailures(draft, 'open');
@@ -51,9 +52,7 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
       due_date: draft.due_date || null,
       issue: draft.issue || null,
       notes: draft.notes || null,
-      action_note: draft.action_note || null,
       updated_at: new Date().toISOString(),
-      updated_by: actor || null,
     };
     const { error } = await supabase.from('jobs').update(patch).eq('id', job.id);
     setSaving(false);
@@ -80,7 +79,7 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
               {draft.customer?.name || draft.customer_name || 'No customer'}
             </div>
             <div style={S.sub}>
-              {draft.customer?.unique_id}
+              {draft.customer?.id}
               {draft.customer?.cs_number && ` · CS ${draft.customer.cs_number}`}
             </div>
           </div>
@@ -101,15 +100,6 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
 
         <div style={S.laneRow}>
           <span style={S.laneChip}>{laneLabel(lane)}</span>
-          {hasHold(draft) && (
-            <span style={S.holdChip}>
-              HOLD {new Date(draft.tentative_date).toLocaleDateString()}
-              <button
-                style={S.clearHold}
-                onClick={async () => { await clearHold(draft, { actor }); onChanged?.(); }}
-              >clear</button>
-            </span>
-          )}
         </div>
 
         {err && <div style={S.err}>{err}</div>}

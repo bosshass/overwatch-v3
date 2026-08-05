@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { LANES, laneOf, hasHold } from '../utils/lanes';
 import { techLabel, missingTech, missingCalendar, isMultiTech, techsOn } from '../utils/scheduledTechs';
-import { fetchBoard } from '../services/jobs';
+import { fetchBoard, laneCtx } from '../services/jobs';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
 import FinishSheet from './FinishSheet';
@@ -12,7 +12,7 @@ import FinishSheet from './FinishSheet';
 // ============================================================================
 
 // When is this actually happening? scheduled_for on the assignment carries the
-// real start instant; jobs.scheduled_date is a date and has no time in it. Show
+// real start instant. jobs holds no dates — next_scheduled comes from
 // the timestamp when there is one, the bare date when there is not.
 function whenLabel(job) {
   const first = (job.assignments || [])
@@ -27,8 +27,8 @@ function whenLabel(job) {
       hour: 'numeric', minute: '2-digit',
     });
   }
-  if (job.scheduled_date) {
-    return new Date(`${job.scheduled_date}T00:00:00`).toLocaleDateString(undefined, {
+  if (job.next_scheduled) {
+    return new Date(job.next_scheduled).toLocaleDateString(undefined, {
       weekday: 'short', month: 'short', day: 'numeric',
     }) + ' · no time set';
   }
@@ -98,7 +98,7 @@ export default function BoardView({ actor }) {
   const byLane = useMemo(() => {
     const m = Object.fromEntries(LANES.map(l => [l.key, []]));
     for (const j of jobs) {
-      const k = laneOf(j, { hasTimeEntry: j.hasTimeEntry });
+      const k = laneOf(j, laneCtx(j));
       if (k && m[k]) m[k].push(j);
     }
     return m;

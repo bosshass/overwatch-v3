@@ -19,7 +19,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
   const [q, setQ] = useState('');
   const [customer, setCustomer] = useState(presetCustomer || null);
   const [f, setF] = useState({
-    job_type: 'service', issue: '', notes: '',
+    issue: '', notes: '',
     priority: '', estimated_hours: '', due_date: '',
   });
   const [busy, setBusy] = useState(false);
@@ -27,7 +27,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
 
   useEffect(() => {
     supabase.from('customers')
-      .select('id, unique_id, name, address, phone, cs_number')
+      .select('id, name, address, phone, is_monitored')
       .is('merged_into', null)
       .order('name')
       .limit(500)
@@ -39,7 +39,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
   const matches = q.trim().length < 2 ? [] : customers.filter(c => {
     const s = q.toLowerCase();
     return (c.name || '').toLowerCase().includes(s)
-        || (c.unique_id || '').toLowerCase().includes(s)
+        || (c.id || '').toLowerCase().includes(s)
         || (c.cs_number || '').includes(s)
         || (c.address || '').toLowerCase().includes(s);
   }).slice(0, 8);
@@ -56,15 +56,12 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
       customer_name: customer.name,
       customer_address: customer.address,
       customer_phone: customer.phone,
-      job_type: f.job_type,
       status: qualifiesForOpen ? 'ready_to_schedule' : 'new',
       priority: f.priority || null,
       estimated_hours: f.estimated_hours === '' ? null : Number(f.estimated_hours),
       due_date: f.due_date || null,
       issue: f.issue || null,
       notes: f.notes || null,
-      created_by: actor || null,
-      updated_by: actor || null,
     }).select().single();
 
     if (error) { setBusy(false); setErr(error.message); return; }
@@ -95,7 +92,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
             <div>
               <div style={S.pickedName}>{customer.name}</div>
               <div style={S.pickedSub}>
-                {customer.unique_id}{customer.address && ` · ${customer.address}`}
+                {customer.id}{customer.address && ` · ${customer.address}`}
               </div>
             </div>
             {!presetCustomer && (
@@ -115,7 +112,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
             {matches.map(c => (
               <button key={c.id} style={S.result} onClick={() => setCustomer(c)}>
                 <span style={S.resName}>{c.name}</span>
-                <span style={S.resSub}>{c.unique_id}{c.address && ` · ${c.address}`}</span>
+                <span style={S.resSub}>{c.id}{c.address && ` · ${c.address}`}</span>
               </button>
             ))}
             {q.trim().length >= 2 && matches.length === 0 && (
@@ -125,18 +122,6 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
         )}
 
         <div style={S.rule} />
-
-        <div style={S.row}>
-          <div style={S.col}>
-            <label style={S.label}>Type</label>
-            <div style={S.chips}>
-              {['service', 'install', 'estimate', 'monitoring'].map(t => (
-                <button key={t} onClick={() => set('job_type', t)}
-                  style={{ ...S.chip, ...(f.job_type === t ? S.chipOn : {}) }}>{t}</button>
-              ))}
-            </div>
-          </div>
-        </div>
 
         <div style={S.row}>
           <div style={S.col}>

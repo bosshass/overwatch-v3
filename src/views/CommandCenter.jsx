@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { LANES, laneOf, hasHold } from '../utils/lanes';
 import { missingTech } from '../utils/scheduledTechs';
-import { fetchBoard } from '../services/jobs';
+import { fetchBoard, laneCtx } from '../services/jobs';
 
 // ============================================================================
 // CommandCenter — what you land on. Replaces OpsHome.
@@ -44,7 +44,7 @@ export default function CommandCenter({ email, onNavigate }) {
     let unowned = 0, held = 0;
 
     for (const j of jobs) {
-      const k = laneOf(j, { hasTimeEntry: j.hasTimeEntry });
+      const k = laneOf(j, laneCtx(j));
       if (k && byLane[k] !== undefined) byLane[k]++;
       if (missingTech(j)) unowned++;
       if (hasHold(j)) held++;
