@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { book } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
-import { calendarForBooking, CALENDARS } from '../config/calendars';
+import { calendarForTech } from '../config/calendars';
 import { fetchEvents, byDay, dayRange, weekStart } from '../services/calendar';
 
 // ============================================================================
@@ -66,22 +66,18 @@ const pretty = t => {
   return `${h12}:${p(mins % 60)} ${h24 < 12 ? 'AM' : 'PM'}`;
 };
 
-const CAL_LABEL = {
-  [CALENDARS.TECH_SCHEDULED]: 'Tech calendar',
-  [CALENDARS.MULTI_TECH]: 'Multi-tech calendar',
-};
 
 export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   const [techs, setTechs] = useState([]);
   const [picked, setPicked] = useState({});     // { tech_id: { hours, day } }
-  const [date, setDate] = useState(job.scheduled_date || '');
+  const [date, setDate] = useState(job.next_scheduled?.slice(0,10) || '');
   const [startTime, setStartTime] = useState('08:00');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
   // Calendar state
   const [anchor, setAnchor] = useState(
-    () => weekStart(job.scheduled_date ? new Date(job.scheduled_date) : new Date())
+    () => weekStart(job.next_scheduled ? new Date(job.next_scheduled) : new Date())
   );
   const [events, setEvents] = useState([]);
   const [calLoading, setCalLoading] = useState(true);
@@ -161,7 +157,12 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   const chosen = Object.keys(picked);
   const totalHours = chosen.reduce((s, id) => s + (Number(picked[id].hours) || 0), 0);
   const dayCount = new Set(chosen.map(id => picked[id].day || 1));
-  const destination = CAL_LABEL[calendarForBooking(chosen.length)] || 'calendar';
+  // One event per tech, each on that tech's own calendar. A tech with no
+  // calendar configured books without an event — surfaced, never silent.
+  const missingCal = chosen.filter(t => !calendarForTech(t)).map(t => t.name);
+  const destination = chosen.length === 1
+    ? `${chosen[0].name}'s calendar`
+    : `${chosen.length} tech calendars`;
 
   const submit = async () => {
     setBusy(true); setErr(null);

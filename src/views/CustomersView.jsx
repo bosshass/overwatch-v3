@@ -5,7 +5,7 @@ import { supabase } from '../services/supabaseClient';
 // CustomersView — the customer list and record.
 //
 // RULES CARRIED OVER FROM THE V9 DEDUP WORK:
-//   - unique_id is the canonical ID. Not drh_id — those were garbage from a
+//   - customers.id IS the DRH ID (ACEH0030). Permanent; never edited in the UI.
 //     broken trigger and v3 does not have the column at all.
 //   - merged_into rows are HIDDEN everywhere. Always filter is('merged_into', null).
 //   - Same name + different cs_number = a different physical location. Keep
@@ -19,7 +19,7 @@ function Detail({ customer, onClose, onNewJob }) {
 
   useEffect(() => {
     supabase.from('jobs')
-      .select('id, status, issue, scheduled_date, due_date, created_at')
+      .select('id, status, issue, due_date, created_at')
       .eq('customer_id', customer.id)
       .order('created_at', { ascending: false })
       .then(({ data }) => setJobs(data || []));
@@ -32,7 +32,7 @@ function Detail({ customer, onClose, onNewJob }) {
           <div>
             <div style={S.name}>{customer.name}</div>
             <div style={S.sub}>
-              {customer.unique_id}
+              {customer.id}
               {customer.cs_number && ` · CS ${customer.cs_number}`}
             </div>
           </div>
@@ -61,7 +61,7 @@ function Detail({ customer, onClose, onNewJob }) {
                 <span style={S.jobStatus}>{j.status}</span>
                 <span style={S.jobIssue}>{j.issue || '—'}</span>
                 <span style={S.jobDate}>
-                  {(j.scheduled_date || j.created_at || '').slice(0, 10)}
+                  {(j.created_at || '').slice(0, 10)}
                 </span>
               </div>
             ))}
@@ -90,7 +90,7 @@ export default function CustomersView({ onNewJob }) {
     if (!s) return rows;
     return rows.filter(c =>
       (c.name || '').toLowerCase().includes(s) ||
-      (c.unique_id || '').toLowerCase().includes(s) ||
+      (c.id || '').toLowerCase().includes(s) ||
       (c.cs_number || '').includes(s) ||
       (c.address || '').toLowerCase().includes(s) ||
       (c.phone || '').includes(s) ||
@@ -121,7 +121,7 @@ export default function CustomersView({ onNewJob }) {
           <button key={c.id} style={S.row} onClick={() => setSel(c)}>
             <div style={S.rowMain}>
               <span style={S.rowName}>{c.name}</span>
-              <span style={S.rowCode}>{c.unique_id}</span>
+              <span style={S.rowCode}>{c.id}</span>
             </div>
             <div style={S.rowSub}>
               {c.address || 'No address'}

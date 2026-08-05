@@ -1,54 +1,65 @@
 // ============================================================================
-// calendars.js — V3 TEST CALENDARS
+// calendars.js — PER-TECH CALENDAR MODEL (2026-08-05)
 //
-// CALENDAR RULE — REVISED 3.1.0 (see lanes.js): booking CREATES an event on the
-// calendar returned by calendarForBooking(), and rebooking deletes the previous
-// event before writing the new one. No title tags are ever written — titles are
-// "<Customer> — <what>". Legacy tag parsers stay read-only.
+// WHAT CHANGED AND WHY
 //
-// ⚠️  MULTI_TECH below is a LIVE DRH CALENDAR. In v9's config it is SUBS.
-//     Anything v3 books against it lands on a calendar the real business uses.
-//     Repoint it at a throwaway before doing volume testing.
+// The old config hardcoded three calendars and chose between them by headcount:
+// one tech -> TECH_SCHEDULED, more than one -> MULTI_TECH. Both were wrong.
+//
+//   * TECH_SCHEDULED was a single test calendar. Every booking in the database
+//     landed on it regardless of who was assigned. techs.calendar_id was never
+//     read, so correcting a tech's calendar changed nothing.
+//
+//   * MULTI_TECH pointed at the LIVE DRH Subs calendar. Test bookings wrote
+//     real events onto a calendar the business uses.
+//
+// THE MODEL NOW: the tech's calendar IS the assignment.
+//
+//   A booking writes ONE EVENT PER TECH, on that tech's own calendar. Two techs
+//   means two events, not one shared event on a "multi" calendar. The calendar
+//   an event lives on is what says whose work it is; a shared event says nothing.
+//
+//   Every pointer is a PAIR: (calendar_id, event_id). Google cannot fetch,
+//   patch, move or delete an event from the id alone. Both live on
+//   job_assignments, one row per tech per day. jobs holds no calendar columns.
+//
+// RESCHEDULE vs RETURN — opposite operations, never inferred:
+//   reschedule -> PATCH the existing event in place. Same row, same event id.
+//   return     -> CREATE a new event and a new assignment row. Original untouched.
+//
+// EVENT MARKER: every event Overwatch creates carries
+// extendedProperties.private.owJobId. It separates "we made this" from "a tech
+// booked it by hand". Without it, drift detection is guesswork on titles.
 // ============================================================================
 
-export const CALENDARS = {
-  // Technician scheduled work — the default booking destination.
-  TECH_SCHEDULED:
-    'c_be458f239dca170e036324458e234ab06e32b1858816d851e6a6b3c1919fa98a@group.calendar.google.com',
-
-  // Internal / admin. Not customer work, never billed.
-  INTERNAL:
-    'c_d781da82d1545a165a5a582df7a7ad55392db60efe6fb5fbfef3f7792b6b1ee3@group.calendar.google.com',
-
-  // Multi-tech events — more than one person on one job.
-  // ⚠️ LIVE: this is SUBS in v9 production config.
-  MULTI_TECH:
-    'c_ef1cf02ebba19919b78be38a9c5d2603ef52a838ac4bb37253fd69d718cdcb5c@group.calendar.google.com',
-};
-
-// Calendars v3 reads when building the board.
-export const SCANNED_CALENDARS = [
-  CALENDARS.TECH_SCHEDULED,
-  CALENDARS.MULTI_TECH,
-];
-
-// Where a booking goes. One tech → tech calendar. More than one → multi-tech.
-export function calendarForBooking(techCount) {
-  return techCount > 1 ? CALENDARS.MULTI_TECH : CALENDARS.TECH_SCHEDULED;
-}
-
-// Where finished work goes to rest. Events are MOVED here — same event id,
-// description and history intact — so the tech calendars only ever show live
-// work. Two triggers, both in jobs.js:
-//   - a return trip is booked  → the original visit files here
-//   - Accounting closes the job → the event files here
-//
-// Deliberately NOT in SCANNED_CALENDARS: the board reads live work only, and
-// scanning Completed would drag every finished job back into view.
+// Where finished work rests. Events are MOVED here so tech calendars only show
+// live work. Deliberately not read when building the board.
 export const COMPLETED_CALENDAR =
   'c_a095f8a75a8e3fb1bb4b0f3a2232962af3ab55f05a49ced1e4338abcc865d3e9@group.calendar.google.com';
 
 export const isCompletedConfigured = () => Boolean(COMPLETED_CALENDAR);
 
-// Tentative holds keep Shana's convention verbatim: "Holding <customer>".
+// Availability only. Read to see who is out; NEVER written to, and an event
+// here must never create a job.
+export const PTO_CALENDAR =
+  'c_cd460585d696524afa5b058d369c563584690aa2f7b654f64993a973e9cb5127@group.calendar.google.com';
+
+export const OW_JOB_PROP = 'owJobId';
+
+export const eventMarker = jobId => ({ private: { [OW_JOB_PROP]: String(jobId) } });
+
+export const markerOf = ev => ev?.extendedProperties?.private?.[OW_JOB_PROP] || null;
+
+// A tech's calendar. Null means none configured — surface it, never fall back
+// to a shared calendar. That fallback is how everything ended up on one.
+export function calendarForTech(tech) {
+  return tech?.calendar_id || null;
+}
+
+// Calendars the board reads: each active tech's own. Resolved from the techs
+// table at call time, not hardcoded.
+export function scannedCalendars(techs = []) {
+  return [...new Set(techs.filter(t => t.is_active && t.calendar_id).map(t => t.calendar_id))];
+}
+
 export const holdTitle = customerName => `Holding ${customerName}`;

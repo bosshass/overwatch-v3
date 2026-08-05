@@ -301,7 +301,7 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
         <div style={T.head}>
           <div>
             <div style={T.cust}>{c.name || 'No customer'}</div>
-            {c.unique_id && <span style={T.code}>{c.unique_id}</span>}
+            {c.id && <span style={T.code}>{c.id}</span>}
             {c.cs_number && <span style={T.code}>CS {c.cs_number}</span>}
           </div>
           <button style={T.x} onClick={onClose}>✕</button>
@@ -314,7 +314,6 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
             ? <div style={T.issueText}>{job.issue}</div>
             : <div style={T.issueNone}>No description on this ticket</div>}
           <div style={T.issueMeta}>
-            {job.job_type && <span>{job.job_type}</span>}
             {job.priority && job.priority !== 'normal' && (
               <span style={T.issuePri}>{job.priority}</span>
             )}
