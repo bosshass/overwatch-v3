@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { laneOf, laneLabel, hasHold, moveOptions, gateFailures, softWarnings } from '../utils/lanes';
 import { techsOn, techLabel, isMultiTech } from '../utils/scheduledTechs';
-import { fetchTimeEntries, moveTo, addNote, fetchNotes } from '../services/jobs';
+import { fetchTimeEntries, moveTo, addNote, fetchTimeline } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 
 // ============================================================================
@@ -17,6 +17,16 @@ import { supabase } from '../services/supabaseClient';
 
 const PRIORITIES = ['low', 'normal', 'high', 'emergency'];
 
+const LANE_WORD = {
+  ready_to_schedule: 'Ready to schedule',
+  new:               'New',
+  scheduled:         'Scheduled',
+  return_pending:    'Return needed',
+  estimate_sent:     'Estimate sent',
+  good_to_go:        'Good to go',
+  closed:            'Closed',
+};
+
 export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule, onFinish, onReview }) {
   const [draft, setDraft] = useState(job);
   const [entries, setEntries] = useState([]);
@@ -28,12 +38,12 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
   const [history, setHistory] = useState([]);
 
   const refreshNotes = () =>
-    fetchNotes(job.id).then(setHistory);
+    fetchTimeline(job.id).then(setHistory);
 
   useEffect(() => { setDraft(job); setDirty(false); }, [job]);
   useEffect(() => {
     fetchTimeEntries(job.id).then(setEntries).catch(() => {});
-    fetchNotes(job.id).then(setHistory).catch(() => {});
+    fetchTimeline(job.id).then(setHistory).catch(() => {});
   }, [job.id]);
 
   const set = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setDirty(true); };
@@ -174,13 +184,23 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
         </div>
         <div style={S.thread}>
           {history.length === 0
-            ? <div style={S.none}>No notes yet.</div>
+            ? <div style={S.none}>Nothing recorded yet.</div>
             : history.map(n => (
-                <div key={n.id} style={S.threadNote}>
+                <div key={n.id} style={{
+                  ...S.threadNote,
+                  ...(n.kind === 'move' || n.kind === 'event' ? S.threadSys : {}),
+                }}>
                   <div style={S.threadMeta}>
-                    <span>{(n.author_email||'system').split('@')[0]}</span>
+                    <span style={S.threadWho}>
+                      {(n.who || 'system').split('@')[0]}
+                    </span>
+                    {n.kind === 'move' && (
+                      <span style={S.threadMove}>
+                        {LANE_WORD[n.from] || n.from} → {LANE_WORD[n.to] || n.to}
+                      </span>
+                    )}
                     <span style={S.threadTime}>
-                      {new Date(n.created_at).toLocaleString(undefined,
+                      {new Date(n.at).toLocaleString(undefined,
                         { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
                     </span>
                   </div>
@@ -339,6 +359,9 @@ const S = {
              alignSelf: 'flex-end' },
   noteBtnOff: { opacity: .45, cursor: 'not-allowed' },
   thread: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 },
+  threadSys: { borderLeft: '2px solid #334155', background: '#0e1829' },
+  threadWho: { color: '#94a3b8' },
+  threadMove: { color: '#14b8a6', fontSize: 11, fontWeight: 700 },
   threadNote: { background: '#0b1220', borderRadius: 8, padding: '8px 10px' },
   threadMeta: { display: 'flex', gap: 10, alignItems: 'baseline', marginBottom: 3 },
   threadTime: { color: '#475569', fontSize: 10 },

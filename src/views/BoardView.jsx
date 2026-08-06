@@ -6,6 +6,7 @@ import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
 import FinishSheet from './FinishSheet';
 import OfficeReview from './OfficeReview';
+import MyHours from './MyHours';
 import MaterialsSheet from './MaterialsSheet';
 
 // ============================================================================
@@ -37,6 +38,14 @@ function whenLabel(job) {
   return null;
 }
 
+const DISPO_WORD = {
+  finished:  'Work completed',
+  return:    'Return visit',
+  estimate:  'Estimate needed',
+  unable:    'Unable to complete',
+  cancelled: 'Cancelled / no access',
+};
+
 function Card({ job, onOpen }) {
   const techs = techsOn(job.assignments);
   const held = hasHold(job);
@@ -50,6 +59,35 @@ function Card({ job, onOpen }) {
         </span>
         {held && <span style={S.hold}>HOLD</span>}
       </div>
+
+      {/* Review is a FLAG, not a lane — which is right, but a flag nothing
+          renders is a flag nobody acts on. A card comes back from a tech
+          sitting in good_to_go looking identical to one already approved, so
+          the office has no signal that anything is waiting on them. */}
+      {job.review_state === 'pending' && (
+        <div style={S.reviewFlag}>
+          <span style={S.reviewWord}>Needs office review</span>
+          {job.lastEntry?.disposition && (
+            <span style={S.dispo}>
+              {DISPO_WORD[job.lastEntry.disposition] || job.lastEntry.disposition}
+            </span>
+          )}
+        </div>
+      )}
+      {job.review_state === 'changes' && (
+        <div style={S.changesFlag}>Changes requested — with the tech</div>
+      )}
+
+      {/* What the tech said, on every returned card — not only the ones still
+          awaiting review. An approved card should still read as the thing that
+          happened, not just a lane. */}
+      {job.lastEntry?.disposition && job.review_state !== 'pending' && (
+        <div style={S.entryLine}>
+          {DISPO_WORD[job.lastEntry.disposition] || job.lastEntry.disposition}
+          {job.lastEntry.by && ` · ${String(job.lastEntry.by).split('@')[0]}`}
+          {job.lastEntry.hours != null && ` · ${job.lastEntry.hours}h`}
+        </div>
+      )}
 
       {when && <div style={S.when}>{when}</div>}
 
@@ -88,6 +126,7 @@ export default function BoardView({ actor }) {
   // is pending, not a separate status column on the board.
   const [reviewJob, setReviewJob] = useState(null);
   const [materialsJob, setMaterialsJob] = useState(null);
+  const [hoursJob, setHoursJob] = useState(null);
 
   const load = () =>
     fetchBoard()
@@ -165,6 +204,7 @@ export default function BoardView({ actor }) {
           onClose={() => setReviewJob(null)}
           onDone={refresh}
           onEnterMaterials={j => { setReviewJob(null); setMaterialsJob(j); }}
+          onEnterTime={j => { setReviewJob(null); setHoursJob(j); }}
         />
       )}
 
@@ -173,6 +213,15 @@ export default function BoardView({ actor }) {
           job={materialsJob}
           actor={actor}
           onClose={() => setMaterialsJob(null)}
+          onSaved={refresh}
+        />
+      )}
+
+      {hoursJob && (
+        <MyHours
+          job={hoursJob}
+          actor={actor}
+          onClose={() => setHoursJob(null)}
           onSaved={refresh}
         />
       )}
@@ -204,6 +253,15 @@ const S = {
   laneMeans: { color: '#64748b', fontSize: 11, marginBottom: 10, lineHeight: 1.3 },
   laneBody: { display: 'flex', flexDirection: 'column', gap: 8 },
   empty: { color: '#475569', fontSize: 12, padding: '12px 4px' },
+  reviewFlag: { marginTop: 6, background: '#78350f', color: '#fde68a',
+                borderRadius: 6, padding: '4px 8px', fontSize: 11.5,
+                fontWeight: 700, display: 'flex', justifyContent: 'space-between',
+                gap: 6, alignItems: 'center' },
+  reviewWord: {},
+  entryLine: { marginTop: 5, color: '#94a3b8', fontSize: 11.5 },
+  dispo: { color: '#fcd34d', fontWeight: 600, fontSize: 11 },
+  changesFlag: { marginTop: 6, background: '#1e3a5f', color: '#bfdbfe',
+                 borderRadius: 6, padding: '4px 8px', fontSize: 11.5 },
   card: { background: '#1a2740', borderRadius: 8, padding: 10 },
   cardTop: { display: 'flex', justifyContent: 'space-between', gap: 6 },
   customer: { color: '#f1f5f9', fontWeight: 600, fontSize: 13 },

@@ -66,6 +66,29 @@ export async function fetchBoard() {
     withTime = new Set((te || []).map(t => t.job_id));
   }
 
+  // What the tech last reported, per job. One query for the whole board rather
+  // than a column on jobs holding a second copy of it — the copy is what
+  // drifts. Sorted newest first and taken once per job.
+  let lastDispo = {};
+  if (ids.length) {
+    const { data: dh } = await supabase
+      .from('job_history')
+      .select('job_id, notes, snapshot, changed_by, changed_at')
+      .eq('kind', 'disposition')
+      .in('job_id', ids)
+      .order('changed_at', { ascending: false });
+    for (const r of dh || []) {
+      if (!lastDispo[r.job_id]) {
+        lastDispo[r.job_id] = {
+          disposition: r.snapshot?.disposition || null,
+          hours: r.snapshot?.hours ?? null,
+          by: r.changed_by || null,
+          at: r.changed_at,
+        };
+      }
+    }
+  }
+
   // Dates come from v_job_schedule, which derives them from job_assignments.
   // jobs holds no dates: a job with JR on Monday and Trevor's return on Friday
   // has two, and one column cannot represent that honestly.
@@ -81,6 +104,7 @@ export async function fetchBoard() {
   return jobs.map(j => ({
     ...j,
     hasTimeEntry: withTime.has(j.id),
+    lastEntry: lastDispo[j.id] || null,
     ...(sched[j.id] || {
       first_scheduled: null, next_scheduled: null, last_scheduled: null,
       active_trips: 0, techs_assigned: 0,
@@ -126,7 +150,7 @@ export async function moveTo(job, laneKey, { actor, note } = {}) {
   if (error) return { ok: false, reason: error.message };
 
   await supabase.from('job_history').insert({
-    job_id: job.id, from_status: from, to_status: target,
+    job_id: job.id, kind: 'move', from_status: from, to_status: target,
     notes: note || null, changed_by: actor || null,
   });
 
@@ -352,7 +376,7 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
   if (jobErr) return { ok: false, reason: jobErr.message };
 
   await supabase.from('job_history').insert({
-    job_id: job.id, from_status: job.status, to_status: 'scheduled',
+    job_id: job.id, kind: 'move', from_status: job.status, to_status: 'scheduled',
     notes: `${isReturnTrip ? 'Return booked' : 'Booked'} ${techs.length} tech${techs.length > 1 ? 's' : ''} for ${date} at ${startTime}`,
     changed_by: actor || null,
   });
@@ -547,7 +571,7 @@ export async function adoptEvent({ calendarId, eventId, customerId, techId, acto
   await updateEvent(calendarId, eventId, { extendedProperties: eventMarker(job.id) });
 
   await supabase.from('job_history').insert({
-    job_id: job.id, from_status: null, to_status: 'scheduled',
+    job_id: job.id, kind: 'move', from_status: null, to_status: 'scheduled',
     notes: 'Adopted from a calendar booking', changed_by: actor || null,
   });
 
@@ -563,6 +587,53 @@ export async function fetchNotes(jobId) {
     .limit(50);
   if (error) throw error;
   return data || [];
+}
+
+// The job's timeline: typed notes AND what the app itself recorded.
+//
+// These were two tables rendered as one — except only `notes` was ever
+// rendered. Every disposition, status move, hours figure and field note that
+// finishWork wrote to job_history was invisible: the office opened a card that
+// had just come back from a tech and saw an empty thread. "No date, no hours,
+// no details" was literal — the rows existed, nothing read them.
+//
+// Merged here rather than in the view so both the ticket and any future
+// customer timeline get the same story in the same order.
+export async function fetchTimeline(jobId) {
+  const [{ data: notes }, { data: hist }] = await Promise.all([
+    supabase.from('notes').select('*')
+      .eq('job_id', jobId).is('archived_at', null)
+      .order('created_at', { ascending: false }).limit(50),
+    supabase.from('job_history').select('*')
+      .eq('job_id', jobId)
+      .order('changed_at', { ascending: false }).limit(100),
+  ]);
+
+  const rows = [
+    ...(notes || []).map(n => ({
+      id: `n-${n.id}`,
+      kind: n.kind === 'field' ? 'field' : 'note',
+      at: n.created_at,
+      who: n.author_email || null,
+      body: n.body || '',
+      from: null, to: null,
+    })),
+    ...(hist || []).map(h => ({
+      id: `h-${h.id}`,
+      kind: h.kind || 'note',
+      at: h.changed_at,
+      who: h.changed_by || null,
+      body: h.notes || '',
+      from: h.from_status || null,
+      to: h.to_status || null,
+      // The figures, unparsed. A disposition entry knows its own hours and
+      // parts count without anyone reading them back out of the sentence.
+      data: h.snapshot || null,
+    })),
+  ];
+
+  rows.sort((a, b) => new Date(b.at) - new Date(a.at));
+  return rows;
 }
 
 // Every note for a customer — job-attached and standing. This is the query the
@@ -686,7 +757,15 @@ export async function finishWork(job, {
     materials: materials || null,
     calendar_event_id: assignment?.calendar_event_id || null,
     calendar_id: assignment?.calendar_id || null,
+    // event_start is the date the WORK happened. created_at defaults to now,
+    // the date it was TYPED. Two columns, deliberately — see saveHours.
     event_start: assignment?.scheduled_for || null,
+    // Which trip. job_id alone cannot say: a job with JR Monday and Trevor's
+    // return Friday has two, and hours belong to one of them.
+    assignment_id: assignmentId || null,
+    // Whose hours (tech_name) vs who typed them (entered_by). At the finish
+    // sheet these are the same person; from Office Review they are not.
+    entered_by: actor || null,
   }) : { error: null };
   if (teErr) return { ok: false, reason: teErr.message };
 
@@ -783,12 +862,24 @@ export async function finishWork(job, {
     cancelled: `${who} — cancelled / no access, ${clock}`,
   };
 
+  // The entry. Not a status row that happens to have prose in it — a
+  // disposition, typed by a named person at a known time, with the numbers it
+  // came with. `snapshot` was already on this table and unused; the figures go
+  // there so nothing has to be parsed back out of the sentence.
   await supabase.from('job_history').insert({
     job_id: job.id,
+    kind: 'disposition',
     from_status: job.status,
     to_status: movedTo || job.status,
     notes: `${HEADLINE[disposition]}\n${fullNote}`,
-    changed_by: actor || null,
+    changed_by: techName || actor || null,
+    snapshot: {
+      disposition,
+      hours: h > 0 ? h : null,
+      parts_requested: wanted.length || null,
+      assignment_id: assignmentId || null,
+      open_assignments: openAssignments.length || null,
+    },
   });
 
   // ── Calendar ─────────────────────────────────────────────────────────────
@@ -816,6 +907,189 @@ export async function finishWork(job, {
   }
 
   return { ok: true, movedTo, disposition, estimateId, openCount: openAssignments.length, hours: h };
+}
+
+// ── Hours ────────────────────────────────────────────────────────────────────
+// Hours are entered in BATCH — Friday evening, for the whole week. That is not
+// a workaround for a missing feature, it is how the work actually goes: a tech
+// closing a job in a parking lot has no reason to stop and do arithmetic, and
+// forcing him to invent a number there is how you get fiction in the billing
+// table.
+//
+// TWO DATES, NEVER ONE.
+//   event_start  the day the work happened   (from the assignment)
+//   created_at   the day it was typed        (now)
+// Collapsing these into one column is the v9 bug that pushed Monday's job into
+// Friday's week — a single date that quietly meant two different things. Every
+// query below groups on event_start; nothing groups on created_at.
+
+// One row per completed TRIP in the window, with whatever hours already exist.
+// Assignments, not jobs: two trips to the same customer are two lines, because
+// they were two different days and possibly two different techs.
+export async function fetchMyHours(techId, fromISO, toISO) {
+  if (!techId) return [];
+
+  const { data: assigns, error } = await supabase
+    .from('job_assignments')
+    .select(`
+      id, job_id, scheduled_for, estimated_hours, is_complete, event_state,
+      job:jobs ( id, status, customer_id, customer:customers ( id, name ) )
+    `)
+    .eq('tech_id', techId)
+    .neq('event_state', 'removed')
+    .gte('scheduled_for', fromISO)
+    .lte('scheduled_for', toISO)
+    .order('scheduled_for', { ascending: true });
+  if (error) throw error;
+
+  const rows = (assigns || []).filter(a => a.scheduled_for);
+  if (!rows.length) return [];
+
+  const { data: entries } = await supabase
+    .from('time_entries')
+    .select('id, assignment_id, total_minutes, billed, entered_by, created_at')
+    .in('assignment_id', rows.map(a => a.id));
+  const byAssignment = new Map((entries || []).map(e => [e.assignment_id, e]));
+
+  return rows.map(a => {
+    const entry = byAssignment.get(a.id) || null;
+    return {
+      assignmentId: a.id,
+      jobId: a.job_id,
+      job: a.job || null,
+      customer: a.job?.customer?.name || 'No customer',
+      customerId: a.job?.customer_id || a.job?.customer?.id || null,
+      workDate: a.scheduled_for,
+      booked: Number(a.estimated_hours) || 0,
+      isComplete: !!a.is_complete,
+      entryId: entry?.id || null,
+      // Already billed means Accounting has acted on this number. Editing it
+      // afterwards silently changes what an invoice was based on, so the row
+      // goes read-only rather than pretending the edit is free.
+      locked: !!entry?.billed,
+      enteredBy: entry?.entered_by || null,
+      hours: entry ? Number(entry.total_minutes || 0) / 60 : null,
+    };
+  });
+}
+
+// The same rows scoped to ONE JOB, for Office Review. No date window: the
+// office is looking at a specific card and wants every trip on it, whenever
+// they happened.
+//
+// Each trip carries its OWN tech. Shana entering Austin's Tuesday must produce
+// tech_name = Austin, entered_by = Shana — taking the tech from whoever has the
+// screen open would quietly reassign the labor to the person doing the typing.
+export async function fetchJobHours(jobId) {
+  if (!jobId) return [];
+
+  const { data: assigns, error } = await supabase
+    .from('job_assignments')
+    .select(`
+      id, job_id, scheduled_for, estimated_hours, is_complete, event_state,
+      tech:techs ( id, name, email ),
+      job:jobs ( id, customer_id, customer:customers ( id, name ) )
+    `)
+    .eq('job_id', jobId)
+    .neq('event_state', 'removed')
+    .order('scheduled_for', { ascending: true });
+  if (error) throw error;
+
+  const rows = assigns || [];
+  if (!rows.length) return [];
+
+  const { data: entries } = await supabase
+    .from('time_entries')
+    .select('id, assignment_id, total_minutes, billed, entered_by')
+    .in('assignment_id', rows.map(a => a.id));
+  const byAssignment = new Map((entries || []).map(e => [e.assignment_id, e]));
+
+  return rows.map(a => {
+    const entry = byAssignment.get(a.id) || null;
+    return {
+      assignmentId: a.id,
+      jobId: a.job_id,
+      job: a.job || null,
+      customer: a.job?.customer?.name || 'No customer',
+      customerId: a.job?.customer_id || a.job?.customer?.id || null,
+      techName: a.tech?.name || null,
+      techEmail: a.tech?.email || null,
+      workDate: a.scheduled_for,
+      booked: Number(a.estimated_hours) || 0,
+      isComplete: !!a.is_complete,
+      entryId: entry?.id || null,
+      locked: !!entry?.billed,
+      enteredBy: entry?.entered_by || null,
+      hours: entry ? Number(entry.total_minutes || 0) / 60 : null,
+    };
+  });
+}
+
+// Save the week. Blanks are SKIPPED, not zeroed — an empty box means "not filed
+// yet", and a zero-hour row would be indistinguishable from a genuine zero
+// while quietly telling Billing this trip was reviewed and found unbillable.
+//
+// Editing an existing entry updates it in place. There is a unique index on
+// assignment_id, so a trip cannot end up with two rows however many times this
+// runs or however the finish sheet was used earlier.
+export async function saveHours(rows, { actor, techName, techEmail } = {}) {
+  const saved = [];
+  const failed = [];
+
+  for (const r of rows || []) {
+    if (r.locked) continue;
+
+    const raw = String(r.hours ?? '').trim();
+    if (raw === '') continue;                       // untouched, not zero
+
+    const h = Number(raw);
+    if (!Number.isFinite(h) || h < 0) {
+      failed.push({ assignmentId: r.assignmentId, reason: 'Not a number' });
+      continue;
+    }
+    if (h > 24) {
+      failed.push({ assignmentId: r.assignmentId, reason: 'More than 24 hours in a day' });
+      continue;
+    }
+
+    const minutes = Math.round(h * 60);
+
+    if (r.entryId) {
+      const { error } = await supabase.from('time_entries')
+        .update({ total_minutes: minutes, entered_by: actor || null })
+        .eq('id', r.entryId);
+      error ? failed.push({ assignmentId: r.assignmentId, reason: error.message })
+            : saved.push(r.assignmentId);
+      continue;
+    }
+
+    if (h === 0) continue;   // nothing to create; see the note above
+
+    const { data: a } = await supabase
+      .from('job_assignments')
+      .select('id, job_id, scheduled_for, calendar_id, calendar_event_id')
+      .eq('id', r.assignmentId)
+      .single();
+
+    const { error } = await supabase.from('time_entries').insert({
+      job_id: a?.job_id || r.jobId || null,
+      assignment_id: r.assignmentId,
+      customer_id: r.customerId || null,
+      customer_name_raw: r.customer || null,
+      tech_name: r.techName || techName || null,     // whose hours
+      tech_email: r.techEmail || techEmail || null,
+      entered_by: actor || null,            // who typed them
+      total_minutes: minutes,
+      entry_method: 'batch',
+      event_start: a?.scheduled_for || r.workDate || null,
+      calendar_id: a?.calendar_id || null,
+      calendar_event_id: a?.calendar_event_id || null,
+    });
+    error ? failed.push({ assignmentId: r.assignmentId, reason: error.message })
+          : saved.push(r.assignmentId);
+  }
+
+  return { ok: failed.length === 0, saved: saved.length, failed };
 }
 
 // A hold is a badge. It does not move the card out of its lane.
@@ -866,7 +1140,7 @@ export async function closeJob(job, actor) {
   if (error) return { ok: false, reason: error.message };
 
   await supabase.from('job_history').insert({
-    job_id: job.id, from_status: job.status, to_status: 'closed',
+    job_id: job.id, kind: 'move', from_status: job.status, to_status: 'closed',
     notes: 'Closed by Accounting', changed_by: actor || null,
   });
 

@@ -56,7 +56,6 @@ export default function FinishSheet({ job, actor, onClose, onFinished }) {
 
   const [disposition, setDisposition] = useState(null);
   const [notes, setNotes]   = useState('');
-  const [hours, setHours]   = useState('');
   const [parts, setParts]   = useState([]);
   const [partsOpen, setPartsOpen] = useState(false);
   const [busy, setBusy]     = useState(false);
@@ -76,7 +75,6 @@ export default function FinishSheet({ job, actor, onClose, onFinished }) {
       assignmentId,
       techName: active?.tech?.name,
       techEmail: active?.tech?.email,
-      hours,
       notes,
       partsRequested: canParts && partsOpen ? parts : [],
       disposition,
@@ -147,10 +145,10 @@ export default function FinishSheet({ job, actor, onClose, onFinished }) {
             const on = d.key === disposition;
             return (
               <button key={d.key} onClick={() => setDisposition(d.key)}
-                      style={{ ...S.disp, ...(on ? { borderColor: d.tint, background: '#132038' } : {}) }}>
+                      style={{ ...S.disp, ...(on ? S.dispOn : {}) }}>
                 <span style={{ ...S.glyph, background: d.tint }}>{d.glyph}</span>
-                <span style={S.dispLabel}>{d.label}</span>
-                <span style={{ ...S.radio, ...(on ? { borderColor: d.tint, background: d.tint, color: '#04201d' } : {}) }}>
+                <span style={{ ...S.dispLabel, ...(on ? S.dispLabelOn : {}) }}>{d.label}</span>
+                <span style={{ ...S.radio, ...(on ? S.radioOn : {}) }}>
                   {on ? '✓' : ''}
                 </span>
               </button>
@@ -201,24 +199,11 @@ export default function FinishSheet({ job, actor, onClose, onFinished }) {
               </div>
             )}
 
-            <label style={S.label}>Hours worked <span style={S.optionalInline}>optional</span></label>
-            <div style={S.hoursRow}>
-              <input
-                type="number" step="0.25" min="0" style={S.hoursInput}
-                placeholder="—" value={hours} onChange={e => setHours(e.target.value)}
-              />
-              <div style={S.quick}>
-                {[1, 2, 4, 8].map(n => (
-                  <button key={n} style={S.quickBtn} onClick={() => setHours(String(n))}>{n}h</button>
-                ))}
-              </div>
-            </div>
-            <div style={S.hint}>Leave it blank if you log your hours later in the week.</div>
           </>
         )}
 
         <div style={S.info}>
-          Warnings don't block review. Time and materials can be entered later.
+          Warnings don't block review. Time and materials are entered later.
         </div>
 
         <button
@@ -268,6 +253,9 @@ const S = {
   tagDone: { color: '#14b8a6', fontSize: 10 },
 
   dispList: { display: 'flex', flexDirection: 'column', gap: 10 },
+  dispOn: { borderColor: '#14b8a6', background: '#122a2c' },
+  dispLabelOn: { color: '#f1f5f9', fontWeight: 600 },
+  radioOn: { borderColor: '#14b8a6', background: '#14b8a6', color: '#04201d' },
   disp: { display: 'flex', alignItems: 'center', gap: 14, textAlign: 'left',
           background: '#0f1b2e', border: '1px solid #1e293b', borderRadius: 12,
           padding: '14px 16px', cursor: 'pointer' },

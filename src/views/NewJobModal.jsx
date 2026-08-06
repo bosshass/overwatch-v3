@@ -67,7 +67,7 @@ export default function NewJobModal({ actor, presetCustomer, onClose, onCreated 
     if (error) { setBusy(false); setErr(error.message); return; }
 
     await supabase.from('job_history').insert({
-      job_id: data.id, from_status: null,
+      job_id: data.id, kind: 'move', from_status: null,
       to_status: data.status, notes: 'Created', changed_by: actor || null,
     });
 

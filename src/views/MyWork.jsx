@@ -4,6 +4,7 @@ import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
 import FinishSheet from './FinishSheet';
 import MaterialsSheet from './MaterialsSheet';
+import MyHours from './MyHours';
 
 // ============================================================================
 // MyWork — what one tech is doing today, and everything they need to do it.
@@ -39,6 +40,7 @@ export default function MyWork({ actor }) {
   const [openStop, setOpenStop] = useState(null);
   const [finishStop, setFinishStop] = useState(null);
   const [materialsJob, setMaterialsJob] = useState(null);
+  const [hoursOpen, setHoursOpen] = useState(false);
 
   // ── The tail ─────────────────────────────────────────────────────────────
   // Work does not end when the tech taps Done. Hours get entered later, often
@@ -90,7 +92,7 @@ export default function MyWork({ actor }) {
     const { data: mine } = await supabase
       .from('job_assignments')
       .select(`
-        job_id,
+        id, job_id, scheduled_for,
         job:jobs (
           id, status, review_state, materials_none_at, updated_at,
           customer:customers ( id, name )
@@ -100,20 +102,45 @@ export default function MyWork({ actor }) {
       .eq('is_complete', true)
       .gte('updated_at', since);
 
-    const jobs = (mine || []).map(a => a.job).filter(Boolean);
-    if (!jobs.length) { setAttention([]); return; }
-    const ids = jobs.map(j => j.id);
+    const trips = (mine || []).filter(a => a.job);
+    if (!trips.length) { setAttention([]); return; }
+    const ids = [...new Set(trips.map(a => a.job_id))];
 
+    // Materials are a JOB fact — what went into the building. Hours are a TRIP
+    // fact — two visits are two numbers. Asking "does this job have hours" is
+    // what made Monday's entry clear Friday's warning, so time is matched on
+    // assignment_id and materials on job_id. The mismatch is the point.
     const [{ data: mats }, { data: times }] = await Promise.all([
       supabase.from('job_materials').select('job_id').in('job_id', ids),
-      supabase.from('time_entries').select('job_id').in('job_id', ids),
+      supabase.from('time_entries').select('assignment_id')
+        .in('assignment_id', trips.map(a => a.id)),
     ]);
     const hasMat  = new Set((mats  || []).map(r => r.job_id));
-    const hasTime = new Set((times || []).map(r => r.job_id));
+    const hasTime = new Set((times || []).map(r => r.assignment_id));
 
     const items = [];
-    for (const j of jobs) {
+    const seenJob = new Set();
+
+    for (const a of trips) {
+      const j = a.job;
       const name = j.customer?.name || 'Customer';
+
+      // Per trip.
+      if (!hasTime.has(a.id)) {
+        const when = a.scheduled_for
+          ? new Date(a.scheduled_for).toLocaleDateString(
+              undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+          : null;
+        items.push({ key: `time-${a.id}`, kind: 'time', job: j,
+                     label: 'Time not entered',
+                     detail: when ? `${name} · ${when}` : name });
+      }
+
+      // Per job — a job with three trips should not raise the same materials
+      // warning three times.
+      if (seenJob.has(j.id)) continue;
+      seenJob.add(j.id);
+
       if (j.review_state === 'changes') {
         items.push({ key: `chg-${j.id}`, kind: 'changes', job: j,
                      label: 'Changes requested', detail: name });
@@ -121,10 +148,6 @@ export default function MyWork({ actor }) {
       if (!hasMat.has(j.id) && !j.materials_none_at) {
         items.push({ key: `mat-${j.id}`, kind: 'materials', job: j,
                      label: 'Materials not logged', detail: name });
-      }
-      if (!hasTime.has(j.id)) {
-        items.push({ key: `time-${j.id}`, kind: 'time', job: j,
-                     label: 'Time not entered', detail: name });
       }
     }
     setAttention(items);
@@ -174,10 +197,13 @@ export default function MyWork({ actor }) {
             {dayLabel}{isToday && <span style={S.todayTag}>today</span>}
           </div>
         </div>
-        <div style={S.dayNav}>
-          <button style={S.navBtn} onClick={() => shiftDay(-1)}>‹</button>
-          <button style={S.navBtn} onClick={() => setDay(localDay(new Date()))}>today</button>
-          <button style={S.navBtn} onClick={() => shiftDay(1)}>›</button>
+        <div style={S.headRight}>
+          <button style={S.hoursBtn} onClick={() => setHoursOpen(true)}>My hours</button>
+          <div style={S.dayNav}>
+            <button style={S.navBtn} onClick={() => shiftDay(-1)}>‹</button>
+            <button style={S.navBtn} onClick={() => setDay(localDay(new Date()))}>today</button>
+            <button style={S.navBtn} onClick={() => shiftDay(1)}>›</button>
+          </div>
         </div>
       </div>
 
@@ -218,6 +244,7 @@ export default function MyWork({ actor }) {
               style={S.attn}
               onClick={() => {
                 if (it.kind === 'materials') setMaterialsJob(it.job);
+                else if (it.kind === 'time') setHoursOpen(true);
                 else if (it.kind === 'changes') setOpenStop(
                   stops.find(s => s.job?.id === it.job.id) || null
                 );
@@ -331,6 +358,15 @@ export default function MyWork({ actor }) {
           actor={actor}
           techId={techId}
           onClose={() => setMaterialsJob(null)}
+          onSaved={loadAttention}
+        />
+      )}
+
+      {hoursOpen && (
+        <MyHours
+          tech={tech}
+          actor={actor}
+          onClose={() => setHoursOpen(false)}
           onSaved={loadAttention}
         />
       )}
@@ -520,6 +556,9 @@ const S = {
              display: 'flex', alignItems: 'center', gap: 7 },
   todayTag: { background: '#14b8a6', color: '#04201d', fontSize: 9, fontWeight: 800,
               padding: '1px 5px', borderRadius: 4 },
+  headRight: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 },
+  hoursBtn: { background: '#111c2e', color: '#94a3b8', border: '1px solid #1e293b',
+              borderRadius: 7, padding: '5px 11px', fontSize: 12, cursor: 'pointer' },
   dayNav: { display: 'flex', gap: 4, flexShrink: 0 },
   navBtn: { background: '#1e293b', color: '#cbd5e1', border: 0, borderRadius: 6,
             padding: '6px 11px', fontSize: 13, cursor: 'pointer' },
