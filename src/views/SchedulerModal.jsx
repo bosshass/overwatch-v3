@@ -97,7 +97,7 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   // Pre-select whoever is already on it, so Reschedule isn't a blank slate.
   useEffect(() => {
     const pre = {};
-    for (const a of job.assignments || []) {
+    for (const a of (job.assignments || []).filter(a => a.event_state !== 'removed')) {
       if (a.tech_id) pre[a.tech_id] = {
         hours: a.estimated_hours ?? defaultHours,
         day: a.day_number || 1,
@@ -159,19 +159,26 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
   const dayCount = new Set(chosen.map(id => picked[id].day || 1));
   // One event per tech, each on that tech's own calendar. A tech with no
   // calendar configured books without an event — surfaced, never silent.
-  const missingCal = chosen.filter(t => !calendarForTech(t)).map(t => t.name);
-  const destination = chosen.length === 1
-    ? `${chosen[0].name}'s calendar`
-    : `${chosen.length} tech calendars`;
+  // chosen holds ids. Resolve to the full tech rows once — book() needs
+  // calendar_id on each, and calendarForTech() takes a tech, not an id.
+  const chosenTechs = chosen
+    .map(id => techs.find(t => t.id === id))
+    .filter(Boolean);
+  const missingCal = chosenTechs.filter(t => !calendarForTech(t)).map(t => t.name);
+  const destination = chosenTechs.length === 1
+    ? `${chosenTechs[0]?.name}'s calendar`
+    : `${chosenTechs.length} tech calendars`;
 
   const submit = async () => {
     setBusy(true); setErr(null);
     const res = await book(job, {
-      techs: chosen.map(id => ({
-        id,
-        name: techs.find(t => t.id === id)?.name || null,
-        hours: Number(picked[id].hours) || null,
-        day: Number(picked[id].day) || 1,
+      // Pass the whole tech row. calendar_id is what decides which calendar the
+      // event lands on — without it book() has nowhere to write and silently
+      // books with no event.
+      techs: chosenTechs.map(t => ({
+        ...t,
+        hours: Number(picked[t.id].hours) || null,
+        day: Number(picked[t.id].day) || 1,
       })),
       date,
       startTime,
@@ -350,6 +357,12 @@ export default function SchedulerModal({ job, actor, onClose, onBooked }) {
             {dayCount.size > 1 && ` · ${dayCount.size} days`}
             <div style={S.cal}>
               starts {pretty(startTime)} · → {destination}
+            {missingCal.length > 0 && (
+              <div style={S.calWarn}>
+                No calendar configured for {missingCal.join(', ')} — will book
+                without an event
+              </div>
+            )}
             </div>
           </div>
         )}
@@ -392,6 +405,8 @@ const S = {
 
   calHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
              marginTop: 18, marginBottom: 8, gap: 10, flexWrap: 'wrap' },
+  calWarn: { marginTop: 6, padding: '6px 8px', borderRadius: 6, fontSize: 11,
+    background: '#7c2d12', color: '#fed7aa' },
   labelInline: { color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 },
   nav: { display: 'flex', alignItems: 'center', gap: 6 },
   navBtn: { background: '#1e293b', color: '#cbd5e1', border: 0, borderRadius: 6,

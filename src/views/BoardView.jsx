@@ -15,7 +15,7 @@ import FinishSheet from './FinishSheet';
 // real start instant. jobs holds no dates — next_scheduled comes from
 // the timestamp when there is one, the bare date when there is not.
 function whenLabel(job) {
-  const first = (job.assignments || [])
+  const first = (job.assignments || []).filter(a => a.event_state !== 'removed')
     .map(a => a.scheduled_for)
     .filter(Boolean)
     .sort()[0];
