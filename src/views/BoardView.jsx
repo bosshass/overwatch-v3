@@ -8,6 +8,7 @@ import FinishSheet from './FinishSheet';
 import OfficeReview from './OfficeReview';
 import MyHours from './MyHours';
 import AskSheet from './AskSheet';
+import EstimateSheet from './EstimateSheet';
 import MaterialsSheet from './MaterialsSheet';
 
 // ============================================================================
@@ -139,6 +140,7 @@ export default function BoardView({ actor }) {
   const [materialsJob, setMaterialsJob] = useState(null);
   const [hoursJob, setHoursJob] = useState(null);
   const [askJob, setAskJob] = useState(null);
+  const [estId, setEstId] = useState(null);
 
   const load = () =>
     fetchBoard()
@@ -198,6 +200,7 @@ export default function BoardView({ actor }) {
           onFinish={j => { setOpenJob(null); setFinishJob(j); }}
           onReview={j => { setOpenJob(null); setReviewJob(j); }}
           onAsk={j => { setOpenJob(null); setAskJob(j); }}
+          onEstimate={(j, id) => { if (id) { setOpenJob(null); setEstId(id); } }}
         />
       )}
 
@@ -227,6 +230,15 @@ export default function BoardView({ actor }) {
           actor={actor}
           onClose={() => setMaterialsJob(null)}
           onSaved={refresh}
+        />
+      )}
+
+      {estId && (
+        <EstimateSheet
+          estimateId={estId}
+          actor={actor}
+          onClose={() => setEstId(null)}
+          onChanged={refresh}
         />
       )}
 

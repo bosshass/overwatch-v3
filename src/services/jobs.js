@@ -1579,6 +1579,121 @@ export async function markPartNotBillable(partId, reason, note, actor) {
   return error ? { ok: false, reason: error.message } : { ok: true };
 }
 
+// ── Estimates ────────────────────────────────────────────────────────────────
+// Draft -> Sent -> Won / Lost. Upstream of the job: quote, win, then schedule.
+//
+// A draft is created by the field ("Estimate needed") with no number and no
+// price. The office prices it and gives it its number when it actually goes
+// out — which is why the job stays on return_pending until then. Estimate
+// Needed is not Estimate Sent, and a card reading estimate_sent while it sits
+// unpriced on a desk makes "waiting on us" indistinguishable from "waiting on
+// the customer".
+//
+// The dollar value is optional and NEVER surfaces on a technician screen or in
+// job history. Overwatch decides who owes the next move; it does not price
+// work in front of the person doing it.
+export async function fetchEstimate(id) {
+  const { data, error } = await supabase
+    .from('estimates')
+    .select('*, customer:customers ( id, name ), job:jobs ( id, status, issue )')
+    .eq('id', id).single();
+  if (error) throw error;
+  return data;
+}
+
+export async function priceEstimate(id, { number, amount, description }, actor) {
+  const patch = { description: description || null };
+  if (number !== undefined)  patch.estimate_number = String(number || '').trim() || null;
+  if (amount !== undefined)  patch.amount = amount === '' ? null : Number(amount);
+
+  const { error } = await supabase.from('estimates').update(patch).eq('id', id);
+  if (error) {
+    return { ok: false, reason: error.message.includes('estimates_number_unique')
+      ? 'That estimate number is already on another estimate'
+      : error.message };
+  }
+  return { ok: true };
+}
+
+// Sending is the moment the job may finally read estimate_sent.
+export async function markEstimateSent(id, actor) {
+  const { data: est } = await supabase
+    .from('estimates').select('id, job_id, estimate_number, status').eq('id', id).single();
+  if (!est) return { ok: false, reason: 'Estimate not found' };
+  if (!est.estimate_number) {
+    return { ok: false, reason: 'Give it an estimate number before sending' };
+  }
+
+  const { error } = await supabase.from('estimates')
+    .update({ status: 'sent', sent_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) return { ok: false, reason: error.message };
+
+  if (est.job_id) {
+    const { data: job } = await supabase
+      .from('jobs').select('id, status').eq('id', est.job_id).single();
+    await supabase.from('jobs')
+      .update({ status: 'estimate_sent', updated_at: new Date().toISOString() })
+      .eq('id', est.job_id);
+    await supabase.from('job_history').insert({
+      job_id: est.job_id, kind: 'move',
+      from_status: job?.status || null, to_status: 'estimate_sent',
+      notes: `Estimate ${est.estimate_number} sent`,
+      changed_by: actor || null,
+      snapshot: { estimate_id: id, estimate_number: est.estimate_number },
+    });
+  }
+  return { ok: true };
+}
+
+// Won spawns exactly ONE job. spawned_job_id is the guard: a second click
+// cannot produce a second job, however many times somebody presses it.
+export async function decideEstimate(id, outcome, actor, note = '') {
+  if (!['won', 'lost'].includes(outcome)) return { ok: false, reason: 'won or lost' };
+
+  const { data: est } = await supabase
+    .from('estimates')
+    .select('id, job_id, customer_id, description, estimate_number, status, spawned_job_id')
+    .eq('id', id).single();
+  if (!est) return { ok: false, reason: 'Estimate not found' };
+
+  const { error } = await supabase.from('estimates').update({
+    status: outcome,
+    decided_at: new Date().toISOString(),
+    decided_note: note || null,
+  }).eq('id', id);
+  if (error) return { ok: false, reason: error.message };
+
+  if (est.job_id) {
+    const { data: job } = await supabase
+      .from('jobs').select('id, status').eq('id', est.job_id).single();
+    // Won goes back to ready_to_schedule — there is work to book. Lost closes.
+    const target = outcome === 'won' ? 'ready_to_schedule' : 'closed';
+    await supabase.from('jobs')
+      .update({ status: target, updated_at: new Date().toISOString() })
+      .eq('id', est.job_id);
+    await supabase.from('job_history').insert({
+      job_id: est.job_id, kind: 'move',
+      from_status: job?.status || null, to_status: target,
+      notes: outcome === 'won'
+        ? `Estimate ${est.estimate_number || ''} won`.trim()
+        : `Estimate ${est.estimate_number || ''} lost${note ? ` — ${note}` : ''}`.trim(),
+      changed_by: actor || null,
+      snapshot: { estimate_id: id, outcome },
+    });
+  }
+  return { ok: true };
+}
+
+export async function listEstimates(status = null) {
+  let q = supabase.from('estimates')
+    .select('*, customer:customers ( id, name )')
+    .order('created_at', { ascending: false });
+  if (status) q = q.eq('status', status);
+  const { data } = await q;
+  return data || [];
+}
+
 // ── Asking someone ───────────────────────────────────────────────────────────
 // ASSIGNING IS NOT SCHEDULING. They were the same act, and only one of them
 // existed: the only way to put a job in front of a person was to book them a
