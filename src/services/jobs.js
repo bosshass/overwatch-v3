@@ -15,8 +15,24 @@
 
 import { supabase } from './supabaseClient';
 import { canMoveTo, laneByKey, softWarnings, canClose } from '../utils/lanes';
-import { createEvent, updateEvent, moveEvent, deleteEvent } from './calendar';
+import { createEvent, updateEvent, moveEvent, deleteEvent, getEvent } from './calendar';
 import { calendarForTech, COMPLETED_CALENDAR, isCompletedConfigured, eventMarker } from '../config/calendars';
+
+// Everything the app writes lives BELOW this marker. Everything above it was
+// typed by a person into the Google event — gate codes, "call before arriving",
+// whatever Shana put there when she booked it straight into the calendar — and
+// is never touched. Splitting on the marker is what lets notes be pushed to the
+// event without eating hand-written text.
+const OW_MARK = '--- Overwatch ---';
+
+export const humanPart = description => {
+  const i = String(description || '').indexOf(OW_MARK);
+  return (i === -1 ? String(description || '') : String(description).slice(0, i)).trimEnd();
+};
+
+const composeDescription = (human, owBlock) =>
+  [humanPart(human), human && humanPart(human) ? '' : null, OW_MARK, owBlock]
+    .filter(v => v !== null).join('\n');
 
 const JOB_SELECT = `
   *,
@@ -153,7 +169,12 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
   // A tech may differ between trips: JR diagnoses, Trevor returns with the
   // part. Tech is per assignment row, so this needs no special handling —
   // but each event goes to THAT tech's calendar, never a shared one.
-  const isReturnTrip = job.status === 'return_pending';
+  // Read the status FRESH. The scheduler opens with whatever the board last
+  // loaded, and a stale 'scheduled' here makes a return look like a reschedule —
+  // which deletes the tech's event instead of adding a second one.
+  const { data: live } = await supabase
+    .from('jobs').select('status').eq('id', job.id).single();
+  const isReturnTrip = (live?.status || job.status) === 'return_pending';
   const warnings = [];
 
   const { data: existing } = await supabase
@@ -190,8 +211,43 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
   }
 
   const customer = job.customer?.name || job.customer_name || 'No customer';
-  const what = job.issue || 'Service';
+  const custId = job.customer?.id || job.customer_id || '';
   const location = job.customer?.address || job.address || '';
+
+  // TITLE: customer + DRH ID. The ID makes every event for an account findable
+  // by Google Calendar search, which a name cannot do reliably — names vary and
+  // the work changes. The issue does NOT go in the title; it goes in the
+  // description, which is what a tech actually reads when glancing at the week.
+  const title = custId ? `${customer} — ${custId}` : customer;
+
+  // DESCRIPTION carries the work itself:
+  //   - the issue: what this trip is for
+  //   - notes tied to this job: they belong to this visit
+  //   - a link into the customer in Overwatch, for standing notes that belong to
+  //     the account rather than to any one trip (gate codes, dog in the yard)
+  const { data: jobNotes } = await supabase
+    .from('notes')
+    .select('body, author_email, created_at')
+    .eq('job_id', job.id)
+    .is('archived_at', null)
+    .order('created_at', { ascending: true })
+    .limit(10);
+
+  const appOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const customerLink = custId && appOrigin
+    ? `${appOrigin}/customers?id=${encodeURIComponent(custId)}`
+    : null;
+
+  const describe = techName => [
+    job.issue || 'Service',
+    '',
+    techName ? `Tech: ${techName}` : null,
+    ...(jobNotes?.length
+      ? ['', 'Notes:', ...jobNotes.map(n =>
+          `· ${n.body}${n.author_email ? ` — ${n.author_email.split('@')[0]}` : ''}`)]
+      : []),
+    ...(customerLink ? ['', `Customer record: ${customerLink}`] : []),
+  ].filter(v => v !== null).join('\n');
 
   const rows = [];
   for (const t of techs) {
@@ -238,12 +294,8 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
       }
       if (!made) {
         made = await createEvent(calendarId, {
-          title: `${customer} — ${what}`,
-          description: [
-            t.name ? `Tech: ${t.name}` : null,
-            isReturnTrip ? 'Return trip' : null,
-            `Booked by ${actor || 'Overwatch'}`,
-          ].filter(Boolean).join('\n'),
+          title,
+          description: composeDescription(null, describe(t.name) + (isReturnTrip ? '\nReturn trip' : '')),
           startISO, endISO, location,
           extendedProperties: eventMarker(job.id),
         });
@@ -395,7 +447,115 @@ export async function addNote(job, text, actor, { onCustomerRecord = false } = {
     author_email: actor || null,
     on_customer_record: onCustomerRecord,
   });
-  return error ? { ok: false, reason: error.message } : { ok: true };
+  if (error) return { ok: false, reason: error.message };
+
+  // A job note belongs to the visit, so it belongs on the visit's calendar
+  // event — the tech reads the event, not the app, when glancing at their week.
+  // A note flagged onto the CUSTOMER record is not tied to this trip and is
+  // reachable through the link in the description instead.
+  if (!onCustomerRecord) await refreshEventDescriptions(job, actor);
+  return { ok: true };
+}
+
+// Rewrite the description on every active event for this job. The app owns the
+// description from here: notes are pushed into it, so anything typed directly
+// into the Google event will be overwritten on the next note. Times, title,
+// location and attendees are never touched.
+export async function refreshEventDescriptions(job) {
+  const { data: assigns } = await supabase
+    .from('job_assignments')
+    .select('calendar_id, calendar_event_id, tech:techs ( name )')
+    .eq('job_id', job.id)
+    .eq('event_state', 'active');
+  if (!assigns?.length) return;
+
+  const fresh = await fetchJob(job.id);
+  const custId = fresh?.customer?.id || fresh?.customer_id || '';
+  const { data: jobNotes } = await supabase
+    .from('notes')
+    .select('body, author_email')
+    .eq('job_id', job.id)
+    .is('archived_at', null)
+    .eq('on_customer_record', false)
+    .order('created_at', { ascending: true })
+    .limit(10);
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const link = custId && origin ? `${origin}/customers?id=${encodeURIComponent(custId)}` : null;
+
+  for (const a of assigns) {
+    if (!a.calendar_id || !a.calendar_event_id) continue;
+    const description = [
+      fresh?.issue || 'Service',
+      '',
+      a.tech?.name ? `Tech: ${a.tech.name}` : null,
+      ...(jobNotes?.length
+        ? ['', 'Notes:', ...jobNotes.map(n =>
+            `· ${n.body}${n.author_email ? ` — ${n.author_email.split('@')[0]}` : ''}`)]
+        : []),
+      ...(link ? ['', `Customer record: ${link}`] : []),
+    ].filter(v => v !== null).join('\n');
+    // Read what is on the event now so anything a person typed survives.
+    const current = await getEvent(a.calendar_id, a.calendar_event_id);
+    await updateEvent(a.calendar_id, a.calendar_event_id, {
+      description: composeDescription(current?.description, description),
+    });
+  }
+}
+
+// ── Adopting a manual booking ────────────────────────────────────────────────
+// Someone books straight into Google — no owJobId marker — and it later becomes
+// a job. Whatever they typed into that event IS the job's notes; it is often the
+// only record of why the visit exists. Import it BEFORE the app takes ownership
+// of the description, or the first note written wipes it.
+export async function adoptEvent({ calendarId, eventId, customerId, techId, actor }) {
+  const ev = await getEvent(calendarId, eventId);
+  if (!ev) return { ok: false, reason: 'Event not found' };
+
+  const typed = humanPart(ev.description);
+  const start = ev.start?.dateTime || ev.start?.date || null;
+
+  const { data: job, error } = await supabase.from('jobs').insert({
+    customer_id: customerId,
+    customer_name: ev.summary || null,
+    issue: ev.summary || 'From calendar',
+    status: 'scheduled',
+    priority: 'normal',
+  }).select('id').single();
+  if (error) return { ok: false, reason: error.message };
+
+  // The typed text becomes a note, attributed and timestamped — not silently
+  // folded into a field where nobody can tell who wrote it.
+  if (typed.trim()) {
+    await supabase.from('notes').insert({
+      job_id: job.id,
+      customer_id: customerId,
+      body: typed.trim(),
+      author_email: ev.creator?.email || null,
+      on_customer_record: false,
+    });
+  }
+
+  await supabase.from('job_assignments').insert({
+    job_id: job.id,
+    tech_id: techId,
+    day_number: 1,
+    scheduled_for: start,
+    calendar_id: calendarId,
+    calendar_event_id: eventId,
+    calendar_synced_at: new Date().toISOString(),
+    event_state: 'active',
+  });
+
+  // Mark it as ours from here, so the next sync knows it is not an orphan.
+  await updateEvent(calendarId, eventId, { extendedProperties: eventMarker(job.id) });
+
+  await supabase.from('job_history').insert({
+    job_id: job.id, from_status: null, to_status: 'scheduled',
+    notes: 'Adopted from a calendar booking', changed_by: actor || null,
+  });
+
+  return { ok: true, jobId: job.id, importedNote: Boolean(typed.trim()) };
 }
 
 export async function fetchNotes(jobId) {
@@ -559,9 +719,11 @@ export async function finishWork(job, {
   if (calId && evId && disposition === 'return') {
     // Title flag, not a description dump — visible in month view without
     // opening the event. Guarded so repeat dispositions do not stack it.
-    const base = (job.calendar_title || `${job.customer?.name || job.customer_name || 'Job'}`)
-      .replace(/^RETURN NEEDED — /, '');
-    await updateEvent(calId, evId, { title: `RETURN NEEDED — ${base}` });
+    // Prefix the EXISTING title. Rebuilding it from the customer name threw
+    // away the DRH ID, which is what makes the account findable in Google search.
+    const ev = await getEvent(calId, evId);
+    const base = String(ev?.summary || '').replace(/^RETURN NEEDED — /, '');
+    if (base) await updateEvent(calId, evId, { title: `RETURN NEEDED — ${base}` });
   }
 
   return { ok: true, movedTo, openCount: openAssignments.length, hours: h };

@@ -112,6 +112,16 @@ export default function CustomersView({ onNewJob }) {
   const [loading, setLoading] = useState(true);
   const [sel, setSel] = useState(null);
 
+  // Deep link from a calendar event: /customers?id=DRHS0262 opens that customer.
+  // The event description carries this link so a tech can jump from the calendar
+  // straight to the standing notes that are not tied to a visit.
+  useEffect(() => {
+    const want = new URLSearchParams(window.location.search).get('id');
+    if (!want || !rows.length) return;
+    const hit = rows.find(c => c.id === want);
+    if (hit) setSel(hit);
+  }, [rows]);
+
   useEffect(() => {
     supabase.from('customers')
       .select('*')

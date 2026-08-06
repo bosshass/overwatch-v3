@@ -191,6 +191,19 @@ function eventBody({ title, description, startISO, endISO, location, extendedPro
   return body;
 }
 
+// Read a single event. Used before writing a description so the human-typed
+// part can be preserved.
+export async function getEvent(calendarId, eventId) {
+  const token = getAccessToken();
+  if (!token) return null;
+  const res = await fetch(
+    `${API}/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function createEvent(calendarId, ev) {
   const token = getAccessToken();
   if (!token) return { ok: false, authExpired: true, reason: 'Not signed in' };
