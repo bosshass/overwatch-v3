@@ -50,6 +50,9 @@ function Card({ job, onOpen }) {
   const techs = techsOn(job.assignments);
   const held = hasHold(job);
   const when = whenLabel(job);
+  const awaiting = job.awaitingReview || [];
+  const pending = awaiting.filter(a => a.state === 'pending').length;
+  const changes = awaiting.filter(a => a.state === 'changes').length;
 
   return (
     <div style={S.card} onClick={() => onOpen(job)} role="button">
@@ -64,24 +67,36 @@ function Card({ job, onOpen }) {
           renders is a flag nobody acts on. A card comes back from a tech
           sitting in good_to_go looking identical to one already approved, so
           the office has no signal that anything is waiting on them. */}
-      {job.review_state === 'pending' && (
+      {/* Why a Returns card is sitting there. "Waiting on a price" and
+          "waiting on a part" are different problems owned by different
+          people, and the lane alone said neither. */}
+      {job.waiting && (
+        <div style={{ ...S.waiting, ...(job.waiting.on === 'us' ? S.waitingUs : {}) }}>
+          {job.waiting.label}
+        </div>
+      )}
+
+      {/* Review is per VISIT. A job with two trips can have one cleared and
+          one still owed, so this counts rather than showing a single flag. */}
+      {pending > 0 && (
         <div style={S.reviewFlag}>
-          <span style={S.reviewWord}>Needs office review</span>
-          {job.lastEntry?.disposition && (
+          <span>
+            {pending === 1 ? 'Needs office review' : `${pending} visits need review`}
+          </span>
+          {job.awaitingReview?.[0]?.disposition && pending === 1 && (
             <span style={S.dispo}>
-              {DISPO_WORD[job.lastEntry.disposition] || job.lastEntry.disposition}
+              {DISPO_WORD[job.awaitingReview[0].disposition] || job.awaitingReview[0].disposition}
             </span>
           )}
         </div>
       )}
-      {job.review_state === 'changes' && (
+      {changes > 0 && (
         <div style={S.changesFlag}>Changes requested — with the tech</div>
       )}
 
-      {/* What the tech said, on every returned card — not only the ones still
-          awaiting review. An approved card should still read as the thing that
-          happened, not just a lane. */}
-      {job.lastEntry?.disposition && job.review_state !== 'pending' && (
+      {/* What the tech said, on every returned card. An approved card should
+          still read as the thing that happened, not just a lane. */}
+      {job.lastEntry?.disposition && pending === 0 && (
         <div style={S.entryLine}>
           {DISPO_WORD[job.lastEntry.disposition] || job.lastEntry.disposition}
           {job.lastEntry.by && ` · ${String(job.lastEntry.by).split('@')[0]}`}
@@ -122,7 +137,7 @@ export default function BoardView({ actor }) {
   const [schedJob, setSchedJob] = useState(null);
   const [finishJob, setFinishJob] = useState(null);
 
-  // Review is a flag, not a lane — so the way in is a card whose review_state
+  // Review is per visit, not a lane — the way in is a card with a visit whose
   // is pending, not a separate status column on the board.
   const [reviewJob, setReviewJob] = useState(null);
   const [materialsJob, setMaterialsJob] = useState(null);
@@ -257,7 +272,9 @@ const S = {
                 borderRadius: 6, padding: '4px 8px', fontSize: 11.5,
                 fontWeight: 700, display: 'flex', justifyContent: 'space-between',
                 gap: 6, alignItems: 'center' },
-  reviewWord: {},
+  waiting: { marginTop: 6, background: '#1e293b', color: '#94a3b8',
+             borderRadius: 6, padding: '3px 8px', fontSize: 11.5 },
+  waitingUs: { background: '#2a1a06', color: '#fcd34d' },
   entryLine: { marginTop: 5, color: '#94a3b8', fontSize: 11.5 },
   dispo: { color: '#fcd34d', fontWeight: 600, fontSize: 11 },
   changesFlag: { marginTop: 6, background: '#1e3a5f', color: '#bfdbfe',

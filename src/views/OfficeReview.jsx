@@ -56,7 +56,7 @@ export default function OfficeReview({ job, actor, onClose, onDone, onEnterTime,
   };
 
   const blocked = gaps && !gaps.parts.ok;
-  const age = ago(job.reviewed_at || job.updated_at);
+  const age = ago(job.updated_at);
 
   const Row = ({ ok, blocks, label, value, children }) => (
     <div style={{ ...S.row, ...(blocks && !ok ? S.rowBlock : {}) }}>

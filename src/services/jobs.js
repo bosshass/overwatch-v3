@@ -66,6 +66,45 @@ export async function fetchBoard() {
     withTime = new Set((te || []).map(t => t.job_id));
   }
 
+  // WHY a return-lane card is waiting.
+  //
+  // Selecting "Estimate Needed" lands the card on return_pending — correct,
+  // because nothing has been sent — but on the board it then reads as an
+  // ordinary return. Waiting on a price and waiting on a part are different
+  // problems owned by different people, and the card said neither.
+  //
+  // Derived, not stored. The attached records already know: an open estimate
+  // means we owe a price, a part not yet arrived means we owe an order.
+  let waiting = {};
+  const returning = jobs.filter(j => j.status === 'return_pending').map(j => j.id);
+  if (returning.length) {
+    const [{ data: ests }, { data: prts }] = await Promise.all([
+      supabase.from('estimates').select('job_id, status, amount')
+        .in('job_id', returning).in('status', ['draft', 'sent']),
+      supabase.from('parts_orders').select('job_id, ordered_at, arrived_at')
+        .in('job_id', returning),
+    ]);
+
+    for (const id of returning) {
+      const est = (ests || []).find(e => e.job_id === id);
+      const parts = (prts || []).filter(p => p.job_id === id);
+      const outstanding = parts.filter(p => !p.arrived_at);
+
+      if (est && est.status === 'draft') {
+        waiting[id] = { kind: 'estimate', label: 'Needs a price', on: 'us' };
+      } else if (est && est.status === 'sent') {
+        waiting[id] = { kind: 'estimate', label: 'Estimate with the customer', on: 'them' };
+      } else if (outstanding.length) {
+        const unordered = outstanding.filter(p => !p.ordered_at).length;
+        waiting[id] = unordered
+          ? { kind: 'parts', label: `${unordered} part${unordered === 1 ? '' : 's'} not ordered`, on: 'us' }
+          : { kind: 'parts', label: `${outstanding.length} part${outstanding.length === 1 ? '' : 's'} on order`, on: 'them' };
+      } else {
+        waiting[id] = { kind: 'ready', label: 'Ready to book', on: 'us' };
+      }
+    }
+  }
+
   // What the tech last reported, per job. One query for the whole board rather
   // than a column on jobs holding a second copy of it — the copy is what
   // drifts. Sorted newest first and taken once per job.
@@ -89,6 +128,10 @@ export async function fetchBoard() {
     }
   }
 
+  // Which visits the office still owes a look at. Derived per visit — a job
+  // with two trips can have one cleared and one outstanding.
+  const awaiting = ids.length ? await visitsAwaitingReview(ids) : {};
+
   // Dates come from v_job_schedule, which derives them from job_assignments.
   // jobs holds no dates: a job with JR on Monday and Trevor's return on Friday
   // has two, and one column cannot represent that honestly.
@@ -105,6 +148,8 @@ export async function fetchBoard() {
     ...j,
     hasTimeEntry: withTime.has(j.id),
     lastEntry: lastDispo[j.id] || null,
+    waiting: waiting[j.id] || null,
+    awaitingReview: awaiting[j.id] || null,
     ...(sched[j.id] || {
       first_scheduled: null, next_scheduled: null, last_scheduled: null,
       active_trips: 0, techs_assigned: 0,
@@ -209,16 +254,37 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
   const prior = existing || [];
   const maxDay = prior.length ? Math.max(...prior.map(a => a.day_number || 1)) : 0;
 
-  // Which time entry asked for this return, if any.
-  let returnsFrom = null;
+  // Which VISIT asked for this return.
+  //
+  // This used to look for a time entry with disposition 'return', and missed
+  // twice over: hours are entered in batch, so at the moment the return is
+  // booked there is usually no time entry at all — and an ESTIMATE disposition
+  // also lands on return_pending, so half the returns were never going to
+  // match 'return' anyway. Result: the link back was silently null and the
+  // finished-to-rescheduled duration was never actually being captured.
+  //
+  // The disposition entry is the thing that asked. Read that.
+  let returnsFromAssignment = null;
   if (isReturnTrip) {
-    const { data: te } = await supabase
-      .from('time_entries')
-      .select('id, created_at')
+    const { data: dh } = await supabase
+      .from('job_history')
+      .select('snapshot, changed_at')
       .eq('job_id', job.id)
-      .eq('disposition', 'return')
-      .order('created_at', { ascending: false })
-      .limit(1);
+      .eq('kind', 'disposition')
+      .order('changed_at', { ascending: false });
+    const asked = (dh || []).find(
+      r => r.snapshot?.disposition === 'return' || r.snapshot?.disposition === 'estimate'
+    );
+    returnsFromAssignment = asked?.snapshot?.assignment_id || null;
+  }
+
+  // The column is named for a time entry, so keep honouring it when one
+  // happens to exist — but the assignment is the answer that is always there.
+  let returnsFrom = null;
+  if (returnsFromAssignment) {
+    const { data: te } = await supabase
+      .from('time_entries').select('id')
+      .eq('assignment_id', returnsFromAssignment).limit(1);
     returnsFrom = te?.[0]?.id || null;
   }
 
@@ -401,7 +467,7 @@ export async function fetchMyDay(techId, dayISO) {
       id, job_id, tech_id, day_number, scheduled_for, estimated_hours,
       is_complete, actual_hours, calendar_event_id,
       job:jobs (
-        id, status, review_state, issue, priority, estimated_hours, due_date, customer_id,
+        id, status, issue, priority, estimated_hours, due_date, customer_id,
         customer:customers ( id, name, address, city, state, zip, phone )
       )
     `)
@@ -844,9 +910,10 @@ export async function finishWork(job, {
 
   // Every disposition goes to the office. Nothing is blocked from REACHING
   // review — gaps are visible there, which is the whole point.
-  await supabase.from('jobs')
-    .update({ review_state: 'pending' })
-    .eq('id', job.id);
+  //
+  // No flag is written. "Awaiting review" is DERIVED: a visit that has a
+  // disposition and no review entry after it. Writing a flag meant a second
+  // visit reset what the office had already cleared on the first.
 
   const who   = techName || actor || 'Tech';
   const clock = h > 0 ? `logged ${h}h` : 'no hours entered';
@@ -933,7 +1000,7 @@ export async function fetchMyHours(techId, fromISO, toISO) {
     .from('job_assignments')
     .select(`
       id, job_id, scheduled_for, estimated_hours, is_complete, event_state,
-      job:jobs ( id, status, review_state, customer_id, customer:customers ( id, name ) )
+      job:jobs ( id, status, customer_id, customer:customers ( id, name ) )
     `)
     .eq('tech_id', techId)
     .neq('event_state', 'removed')
@@ -945,10 +1012,12 @@ export async function fetchMyHours(techId, fromISO, toISO) {
   const rows = (assigns || []).filter(a => a.scheduled_for);
   if (!rows.length) return [];
 
-  const { data: entries } = await supabase
-    .from('time_entries')
-    .select('id, assignment_id, total_minutes, billed, entered_by, created_at')
-    .in('assignment_id', rows.map(a => a.id));
+  const [{ data: entries }, reviews] = await Promise.all([
+    supabase.from('time_entries')
+      .select('id, assignment_id, total_minutes, billed, entered_by, created_at')
+      .in('assignment_id', rows.map(a => a.id)),
+    reviewStates(rows.map(a => a.id)),
+  ]);
   const byAssignment = new Map((entries || []).map(e => [e.assignment_id, e]));
 
   return rows.map(a => {
@@ -969,9 +1038,9 @@ export async function fetchMyHours(techId, fromISO, toISO) {
       // problem one step earlier: the office looked at these hours and signed
       // them off, and a later edit changes what was approved without anyone
       // being told. Before either, the tech owns their own typo.
-      locked: !!entry?.billed || a.job?.review_state === 'approved',
+      locked: !!entry?.billed || reviews[a.id]?.state === 'approved',
       lockReason: entry?.billed ? 'billed'
-                : a.job?.review_state === 'approved' ? 'approved by the office'
+                : reviews[a.id]?.state === 'approved' ? 'approved by the office'
                 : null,
       enteredBy: entry?.entered_by || null,
       hours: entry ? Number(entry.total_minutes || 0) / 60 : null,
@@ -994,7 +1063,7 @@ export async function fetchJobHours(jobId) {
     .select(`
       id, job_id, scheduled_for, estimated_hours, is_complete, event_state,
       tech:techs ( id, name, email ),
-      job:jobs ( id, review_state, customer_id, customer:customers ( id, name ) )
+      job:jobs ( id, customer_id, customer:customers ( id, name ) )
     `)
     .eq('job_id', jobId)
     .neq('event_state', 'removed')
@@ -1004,10 +1073,12 @@ export async function fetchJobHours(jobId) {
   const rows = assigns || [];
   if (!rows.length) return [];
 
-  const { data: entries } = await supabase
-    .from('time_entries')
-    .select('id, assignment_id, total_minutes, billed, entered_by')
-    .in('assignment_id', rows.map(a => a.id));
+  const [{ data: entries }, reviews] = await Promise.all([
+    supabase.from('time_entries')
+      .select('id, assignment_id, total_minutes, billed, entered_by')
+      .in('assignment_id', rows.map(a => a.id)),
+    reviewStates(rows.map(a => a.id)),
+  ]);
   const byAssignment = new Map((entries || []).map(e => [e.assignment_id, e]));
 
   return rows.map(a => {
@@ -1024,9 +1095,9 @@ export async function fetchJobHours(jobId) {
       booked: Number(a.estimated_hours) || 0,
       isComplete: !!a.is_complete,
       entryId: entry?.id || null,
-      locked: !!entry?.billed || a.job?.review_state === 'approved',
+      locked: !!entry?.billed || reviews[a.id]?.state === 'approved',
       lockReason: entry?.billed ? 'billed'
-                : a.job?.review_state === 'approved' ? 'approved by the office'
+                : reviews[a.id]?.state === 'approved' ? 'approved by the office'
                 : null,
       enteredBy: entry?.entered_by || null,
       hours: entry ? Number(entry.total_minutes || 0) / 60 : null,
@@ -1330,6 +1401,74 @@ export async function markPartNotBillable(partId, reason, note, actor) {
 // gap somebody can fill from memory or a timesheet, but a billable part that
 // arrived and nobody confirmed is money already spent that is about to vanish
 // off the invoice. One is incomplete paperwork; the other is a leak.
+// Review follows the VISIT, not the job.
+//
+// It was three columns on jobs, which meant a job with two trips had one flag
+// and two things to look at: dispositioning the second visit reset the flag
+// the office had already cleared on the first, and approving cleared both.
+//
+// A review is a time-associated entry like any other — who looked, when, what
+// they decided, what they said. So it lives in the stream with the disposition
+// it is reviewing, keyed to the same assignment. That also means the approval
+// HISTORY survives: who signed off on what, not just the current answer.
+export async function reviewStates(assignmentIds = []) {
+  if (!assignmentIds.length) return {};
+  const { data } = await supabase
+    .from('job_history')
+    .select('snapshot, notes, changed_by, changed_at')
+    .eq('kind', 'review')
+    .order('changed_at', { ascending: false });
+
+  const want = new Set(assignmentIds);
+  const out = {};
+  for (const r of data || []) {
+    const id = r.snapshot?.assignment_id;
+    if (!id || !want.has(id) || out[id]) continue;
+    out[id] = {
+      state: r.snapshot?.state || null,          // approved | changes
+      by: r.changed_by || null,
+      at: r.changed_at,
+      note: r.notes || null,
+    };
+  }
+  return out;
+}
+
+// A visit needing office attention: dispositioned, and either never reviewed
+// or the last review asked for changes and the tech has re-dispositioned since.
+export async function visitsAwaitingReview(jobIds = []) {
+  if (!jobIds.length) return {};
+
+  const { data: assigns } = await supabase
+    .from('job_assignments')
+    .select('id, job_id')
+    .in('job_id', jobIds)
+    .neq('event_state', 'removed');
+  const ids = (assigns || []).map(a => a.id);
+  if (!ids.length) return {};
+
+  const [dispos, reviews] = await Promise.all([
+    dispositionsFor(ids),
+    reviewStates(ids),
+  ]);
+
+  const out = {};
+  for (const a of assigns) {
+    const d = dispos[a.id];
+    if (!d) continue;                             // never closed out
+    const r = reviews[a.id];
+    // Reviewed AFTER the latest disposition means it has been dealt with.
+    if (r && new Date(r.at) >= new Date(d.at)) {
+      if (r.state === 'changes') {
+        (out[a.job_id] ||= []).push({ assignmentId: a.id, state: 'changes', ...d });
+      }
+      continue;
+    }
+    (out[a.job_id] ||= []).push({ assignmentId: a.id, state: 'pending', ...d });
+  }
+  return out;
+}
+
 export async function reviewGaps(job) {
   const [{ count: timeCount }, { count: matCount }, parts] = await Promise.all([
     supabase.from('time_entries').select('id', { count: 'exact', head: true }).eq('job_id', job.id),
@@ -1348,7 +1487,7 @@ export async function reviewGaps(job) {
   };
 }
 
-export async function approveForBilling(job, actor) {
+export async function approveForBilling(job, actor, assignmentId = null) {
   const gaps = await reviewGaps(job);
   if (!gaps.parts.ok) {
     const n = gaps.parts.unconfirmed.length;
@@ -1358,27 +1497,36 @@ export async function approveForBilling(job, actor) {
             + `${n === 1 ? 'it is' : 'they are'} on the bill. Confirm or mark not billable first.`,
     };
   }
-  const { error } = await supabase.from('jobs').update({
-    review_state: 'approved',
-    reviewed_by: actor || null,
-    reviewed_at: new Date().toISOString(),
-  }).eq('id', job.id);
+  const { error } = await supabase.from('job_history').insert({
+    job_id: job.id,
+    kind: 'review',
+    from_status: job.status,
+    to_status: job.status,          // review never moves the card
+    notes: 'Approved for billing',
+    changed_by: actor || null,
+    snapshot: { state: 'approved', assignment_id: assignmentId || null },
+  });
   return error ? { ok: false, reason: error.message } : { ok: true, warnings: gaps };
 }
 
 // Kicks the job back to the tech. The note is required — "changes requested"
 // with nothing attached is a dead end for whoever picks it up.
-export async function requestChanges(job, note, actor) {
+export async function requestChanges(job, note, actor, assignmentId = null) {
   const body = String(note || '').trim();
   if (!body) return { ok: false, reason: 'Say what needs to change' };
 
-  const { error } = await supabase.from('jobs').update({
-    review_state: 'changes',
-    reviewed_by: actor || null,
-    reviewed_at: new Date().toISOString(),
-  }).eq('id', job.id);
+  const { error } = await supabase.from('job_history').insert({
+    job_id: job.id,
+    kind: 'review',
+    from_status: job.status,
+    to_status: job.status,
+    notes: body,
+    changed_by: actor || null,
+    snapshot: { state: 'changes', assignment_id: assignmentId || null },
+  });
   if (error) return { ok: false, reason: error.message };
 
+  // Also a note, so the tech reads it where they read everything else.
   await supabase.from('notes').insert({
     job_id: job.id,
     customer_id: job.customer_id || job.customer?.id || null,

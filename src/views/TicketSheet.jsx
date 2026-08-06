@@ -251,7 +251,7 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
           )}
           {/* Review is a flag on the job, not a lane, so the way in is the
               card itself once a tech has dispositioned it. */}
-          {onReview && draft.review_state === 'pending' && (
+          {onReview && (
             <button style={S.review} onClick={() => onReview(draft)}>
               Office review
             </button>

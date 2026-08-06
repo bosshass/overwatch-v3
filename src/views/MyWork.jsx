@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchMyDay, addNote, fetchNotes, dispositionsFor } from '../services/jobs';
+import { fetchMyDay, addNote, fetchNotes, dispositionsFor, reviewStates } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
 import FinishSheet from './FinishSheet';
@@ -43,6 +43,7 @@ export default function MyWork({ actor }) {
   const [hoursOpen, setHoursOpen] = useState(false);
   // assignmentId -> what was declared. A stop that has one cannot declare again.
   const [declared, setDeclared] = useState({});
+  const [reviews, setReviews] = useState({});
 
   // ── The tail ─────────────────────────────────────────────────────────────
   // Work does not end when the tech taps Done. Hours get entered later, often
@@ -78,7 +79,9 @@ export default function MyWork({ actor }) {
     try {
       const list = await fetchMyDay(techId, day);
       setStops(list);
-      setDeclared(await dispositionsFor(list.map(s2 => s2.id)));
+      const aIds = list.map(s2 => s2.id);
+      const [d, r] = await Promise.all([dispositionsFor(aIds), reviewStates(aIds)]);
+      setDeclared(d); setReviews(r);
     } catch (e) {
       setErr(e.message);
     }
@@ -98,7 +101,7 @@ export default function MyWork({ actor }) {
       .select(`
         id, job_id, scheduled_for,
         job:jobs (
-          id, status, review_state, materials_none_at, updated_at,
+          id, status, materials_none_at, updated_at,
           customer:customers ( id, name )
         )
       `)
@@ -114,10 +117,11 @@ export default function MyWork({ actor }) {
     // fact — two visits are two numbers. Asking "does this job have hours" is
     // what made Monday's entry clear Friday's warning, so time is matched on
     // assignment_id and materials on job_id. The mismatch is the point.
-    const [{ data: mats }, { data: times }] = await Promise.all([
+    const [{ data: mats }, { data: times }, reviews] = await Promise.all([
       supabase.from('job_materials').select('job_id').in('job_id', ids),
       supabase.from('time_entries').select('assignment_id')
         .in('assignment_id', trips.map(a => a.id)),
+      reviewStates(trips.map(a => a.id)),
     ]);
     const hasMat  = new Set((mats  || []).map(r => r.job_id));
     const hasTime = new Set((times || []).map(r => r.assignment_id));
@@ -140,15 +144,19 @@ export default function MyWork({ actor }) {
                      detail: when ? `${name} · ${when}` : name });
       }
 
+      // Changes requested is per VISIT — the office sent back one trip, not
+      // the whole job, and the tech needs to know which.
+      if (reviews[a.id]?.state === 'changes') {
+        items.push({ key: `chg-${a.id}`, kind: 'changes', job: j,
+                     label: 'Changes requested',
+                     detail: reviews[a.id].note
+                       ? `${name} — ${reviews[a.id].note}` : name });
+      }
+
       // Per job — a job with three trips should not raise the same materials
       // warning three times.
       if (seenJob.has(j.id)) continue;
       seenJob.add(j.id);
-
-      if (j.review_state === 'changes') {
-        items.push({ key: `chg-${j.id}`, kind: 'changes', job: j,
-                     label: 'Changes requested', detail: name });
-      }
       if (!hasMat.has(j.id) && !j.materials_none_at) {
         items.push({ key: `mat-${j.id}`, kind: 'materials', job: j,
                      label: 'Materials not logged', detail: name });
@@ -352,6 +360,7 @@ export default function MyWork({ actor }) {
           stop={openStop}
           actor={actor}
           declared={declared[openStop.id] || null}
+          reviewState={reviews[openStop.id]?.state || null}
           onClose={() => setOpenStop(null)}
           onFinish={() => { const s = openStop; setOpenStop(null); setFinishStop(s); }}
         />
@@ -413,11 +422,9 @@ const DECLARED_WORD = {
   cancelled: 'Cancelled / no access',
 };
 
-function StopSheet({ stop, actor, declared, onClose, onFinish }) {
+function StopSheet({ stop, actor, declared, reviewState, onClose, onFinish }) {
   const job = stop.job || {};
-  // Set to 'changes' when the office sends it back. That is the ONLY route to
-  // declaring a second time.
-  const reviewState = job.review_state || null;
+  // The office sending THIS VISIT back is the only route to declaring twice.
   const c = job.customer || {};
 
   const [notes, setNotes] = useState([]);
