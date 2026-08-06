@@ -66,76 +66,51 @@ export async function fetchBoard() {
     withTime = new Set((te || []).map(t => t.job_id));
   }
 
-  // WHY a return-lane card is waiting.
-  //
-  // Selecting "Estimate Needed" lands the card on return_pending — correct,
-  // because nothing has been sent — but on the board it then reads as an
-  // ordinary return. Waiting on a price and waiting on a part are different
-  // problems owned by different people, and the card said neither.
-  //
-  // Derived, not stored. The attached records already know: an open estimate
-  // means we owe a price, a part not yet arrived means we owe an order.
-  let waiting = {};
-  const returning = jobs.filter(j => j.status === 'return_pending').map(j => j.id);
-  let lastDispoEarly = {};
-  if (returning.length) {
-    const { data: rh } = await supabase
-      .from('job_history').select('job_id, snapshot, changed_at')
-      .eq('kind', 'disposition').in('job_id', returning)
-      .order('changed_at', { ascending: false });
-    for (const r of rh || []) {
-      if (!lastDispoEarly[r.job_id]) lastDispoEarly[r.job_id] = r.snapshot?.disposition || null;
-    }
-    const [{ data: ests }, { data: prts }] = await Promise.all([
-      supabase.from('estimates').select('job_id, status, amount')
-        .in('job_id', returning).in('status', ['draft', 'sent']),
-      supabase.from('parts_orders').select('job_id, ordered_at, arrived_at')
-        .in('job_id', returning),
+  // Facts every job carries, gathered once for the whole board. The blocker
+  // is DERIVED from these — see blockerFor(). Nothing here is stored on jobs.
+  let estimates = {}, parts = {}, dispo = {};
+  if (ids.length) {
+    const [{ data: ests }, { data: prts }, { data: dh }] = await Promise.all([
+      supabase.from('estimates')
+        .select('id, job_id, status, estimate_number, created_at, sent_at, decided_at')
+        .in('job_id', ids).in('status', ['draft', 'sent'])
+        .order('created_at', { ascending: false }),
+      supabase.from('parts_orders')
+        .select('job_id, ordered_at, arrived_at, billable, billing_acknowledged_at')
+        .in('job_id', ids),
+      supabase.from('job_history')
+        .select('job_id, snapshot, changed_at')
+        .eq('kind', 'disposition').in('job_id', ids)
+        .order('changed_at', { ascending: false }),
     ]);
-
-    for (const id of returning) {
-      const est = (ests || []).find(e => e.job_id === id);
-      const parts = (prts || []).filter(p => p.job_id === id);
-      const outstanding = parts.filter(p => !p.arrived_at);
-
-      if (est && est.status === 'draft') {
-        waiting[id] = { kind: 'estimate', label: 'Needs a price', on: 'us' };
-      } else if (est && est.status === 'sent') {
-        waiting[id] = { kind: 'estimate', label: 'Estimate with the customer', on: 'them' };
-      } else if (outstanding.length) {
-        const unordered = outstanding.filter(p => !p.ordered_at).length;
-        waiting[id] = unordered
-          ? { kind: 'parts', label: `${unordered} part${unordered === 1 ? '' : 's'} not ordered`, on: 'us' }
-          : { kind: 'parts', label: `${outstanding.length} part${outstanding.length === 1 ? '' : 's'} on order`, on: 'them' };
-      } else {
-        const d = lastDispoEarly[id];
-        waiting[id] =
-            d === 'unable'    ? { kind: 'failed', label: 'Could not complete — rebook', on: 'us' }
-          : d === 'cancelled' ? { kind: 'failed', label: 'No access — rebook', on: 'us' }
-          : { kind: 'ready', label: 'Ready to book', on: 'us' };
-      }
+    for (const e of ests || []) if (!estimates[e.job_id]) estimates[e.job_id] = e;
+    for (const p of prts || []) (parts[p.job_id] ||= []).push(p);
+    for (const r of dh || []) {
+      if (!dispo[r.job_id]) dispo[r.job_id] = {
+        disposition: r.snapshot?.disposition || null,
+        hours: r.snapshot?.hours ?? null,
+        at: r.changed_at,
+      };
     }
   }
 
-  // What the tech last reported, per job. One query for the whole board rather
-  // than a column on jobs holding a second copy of it — the copy is what
-  // drifts. Sorted newest first and taken once per job.
-  let lastDispo = {};
+  // WHEN the job entered the lane it is in now.
+  //
+  // The card's age badge must not read updated_at — that moves every time
+  // somebody fixes a typo, so a card stuck for three weeks would show "today".
+  // The last transition INTO the current status is the honest answer, and
+  // job_history has recorded it since the beginning.
+  let laneSince = {};
   if (ids.length) {
-    const { data: dh } = await supabase
+    const { data: mv } = await supabase
       .from('job_history')
-      .select('job_id, notes, snapshot, changed_by, changed_at')
-      .eq('kind', 'disposition')
-      .in('job_id', ids)
+      .select('job_id, to_status, changed_at')
+      .eq('kind', 'move').in('job_id', ids)
       .order('changed_at', { ascending: false });
-    for (const r of dh || []) {
-      if (!lastDispo[r.job_id]) {
-        lastDispo[r.job_id] = {
-          disposition: r.snapshot?.disposition || null,
-          hours: r.snapshot?.hours ?? null,
-          by: r.changed_by || null,
-          at: r.changed_at,
-        };
+    const status = Object.fromEntries(jobs.map(j => [j.id, j.status]));
+    for (const r of mv || []) {
+      if (!laneSince[r.job_id] && r.to_status === status[r.job_id]) {
+        laneSince[r.job_id] = r.changed_at;
       }
     }
   }
@@ -160,8 +135,10 @@ export async function fetchBoard() {
   return jobs.map(j => ({
     ...j,
     hasTimeEntry: withTime.has(j.id),
-    lastEntry: lastDispo[j.id] || null,
-    waiting: waiting[j.id] || null,
+    lane_since: laneSince[j.id] || j.created_at,
+    lastEntry: dispo[j.id] || null,
+    estimate: estimates[j.id] || null,
+    parts: parts[j.id] || [],
     awaitingReview: awaiting[j.id] || null,
     openAsks: asks[j.id] || null,
     ...(sched[j.id] || {
@@ -169,6 +146,184 @@ export async function fetchBoard() {
       active_trips: 0, techs_assigned: 0,
     }),
   }));
+}
+
+// ── The blocker ──────────────────────────────────────────────────────────────
+// A job has ONE blocker at a time: the open thing nearest to hand. The board
+// card states it in four words; the detail screen states it, ages it, explains
+// the next step and gives you the button. Same fact, three sizes, derived in
+// one place so the two surfaces cannot tell different stories.
+//
+// This replaced five separate coloured strips on the card. They were all
+// answering the same question — what is this waiting on — and each got its own
+// bar, so a card showing three of them buried the one that mattered.
+//
+// TONE IS OWNERSHIP, NOT SEVERITY. The question a board answers is "which of
+// these is on us":
+//   broken  the record cannot proceed as it stands
+//   person  a named person is blocked, and everyone can see who
+//   us      we owe the next move
+//   them    waiting outside the business
+//   done    cleared
+//
+// Order matters. First match wins and nothing else renders.
+const DAY = 86400000;
+const agedDays = iso => (iso ? Math.floor((Date.now() - new Date(iso).getTime()) / DAY) : null);
+
+// Amber past 3 days when it is on us, 7 when it is on them. A customer sitting
+// on an estimate for a week is normal; us sitting on a draft for a week is not.
+const isStale = (days, tone) =>
+  days != null && days > (tone === 'them' ? 7 : 3);
+
+const DISPO_LABEL = {
+  finished:  'Work completed',
+  return:    'Return visit',
+  estimate:  'Estimate needed',
+  unable:    'Unable to complete',
+  cancelled: 'Cancelled / no access',
+};
+
+export function blockerFor(job) {
+  if (!job) return null;
+  const mk = (key, label, tone, opts = {}) => {
+    const days = agedDays(opts.since);
+    return {
+      key, label, tone, days,
+      stale: isStale(days, tone),
+      detail: opts.detail || null,     // second line on the banner
+      next: opts.next || null,         // "Next step", in plain words
+      action: opts.action || null,     // what the primary button does
+      ...opts.extra,
+    };
+  };
+
+  const assigns = (job.assignments || []).filter(a => a.event_state !== 'removed');
+  const awaiting = job.awaitingReview || [];
+  const asks = job.openAsks || [];
+  const est = job.estimate || null;
+  const parts = job.parts || [];
+  const dispo = job.lastEntry || null;
+
+  // 1. Broken — nothing can proceed until the record is right.
+  if (job.status === 'scheduled') {
+    if (!assigns.length) {
+      return mk('no_tech', 'No tech scheduled', 'broken', {
+        next: 'Book a tech so this lands on somebody\'s calendar.',
+        action: 'schedule',
+      });
+    }
+    if (assigns.some(a => !a.calendar_event_id)) {
+      return mk('no_event', 'Not on a calendar', 'broken', {
+        next: 'The booking exists here but not in Google. Rebook it.',
+        action: 'schedule',
+      });
+    }
+  }
+
+  // 2. A person is blocked. Outranks paperwork — somebody is stopped.
+  if (asks.length) {
+    const who = asks.map(q => q.tech?.name).filter(Boolean).join(', ') || 'someone';
+    return mk('ask', `Waiting on ${who}`, 'person', {
+      since: asks[0].created_at,
+      detail: asks[0].body,
+      next: `${who.split(',')[0]} has been asked and has not answered yet.`,
+      action: 'ask',
+      extra: { askId: asks[0].id },
+    });
+  }
+
+  // 3. The office sent a visit back.
+  const changes = awaiting.find(a => a.state === 'changes');
+  if (changes) {
+    return mk('changes', 'Changes requested', 'us', {
+      since: changes.at,
+      detail: DISPO_LABEL[changes.disposition] || null,
+      next: 'The tech needs to redo their disposition on that visit.',
+      action: 'visit',
+      extra: { assignmentId: changes.assignmentId },
+    });
+  }
+
+  // 4. A visit came back and nobody has looked at it.
+  const pending = awaiting.filter(a => a.state === 'pending');
+  if (pending.length) {
+    return mk('review',
+      pending.length === 1 ? 'Needs office review' : `${pending.length} visits need review`,
+      'us', {
+        since: pending[0].at,
+        detail: DISPO_LABEL[pending[0].disposition] || null,
+        next: 'Check time and materials, then approve for billing.',
+        action: 'review',
+      });
+  }
+
+  // 5/6. The estimate. A draft is on us; a sent one is on the customer.
+  if (est?.status === 'draft') {
+    return mk('estimate_draft', 'Waiting on estimate', 'us', {
+      since: est.created_at,
+      detail: 'Draft created — no price yet',
+      next: 'Review pricing and send the estimate to the customer.',
+      action: 'estimate',
+      extra: { estimateId: est.id },
+    });
+  }
+  if (est?.status === 'sent') {
+    return mk('estimate_sent', 'Estimate with the customer', 'them', {
+      since: est.sent_at || est.created_at,
+      detail: est.estimate_number ? `Estimate ${est.estimate_number}` : null,
+      next: 'Waiting on their decision. Follow up if it goes quiet.',
+      action: 'estimate',
+      extra: { estimateId: est.id },
+    });
+  }
+
+  // 7/8. Parts. Not ordered is on us; on order is on the supplier.
+  const outstanding = parts.filter(p => !p.arrived_at);
+  if (outstanding.length) {
+    const unordered = outstanding.filter(p => !p.ordered_at);
+    if (unordered.length) {
+      return mk('parts_unordered',
+        `${unordered.length} part${unordered.length === 1 ? '' : 's'} not ordered`, 'us', {
+          since: unordered[0].requested_at,
+          next: 'Place the order so the return trip can be booked.',
+          action: 'parts',
+        });
+    }
+    return mk('parts_ordered',
+      `${outstanding.length} part${outstanding.length === 1 ? '' : 's'} on order`, 'them', {
+        since: outstanding[0].ordered_at,
+        next: 'Waiting on the supplier. Mark arrived when it lands.',
+        action: 'parts',
+      });
+  }
+
+  // 9. A failed visit with nothing else outstanding still owes a trip.
+  if (job.status === 'return_pending') {
+    const label =
+        dispo?.disposition === 'unable'    ? 'Could not complete — rebook'
+      : dispo?.disposition === 'cancelled' ? 'No access — rebook'
+      : 'Ready to book';
+    return mk('rebook', label, 'us', {
+      since: dispo?.at,
+      next: 'Book another visit.',
+      action: 'schedule',
+    });
+  }
+
+  // 10. Cleared. Worth saying so — an approved card should not look identical
+  //     to one nobody has touched.
+  const approved = awaiting.length === 0 && dispo && job.status === 'good_to_go';
+  if (approved) {
+    return mk('approved', 'Approved for billing', 'done', {
+      since: dispo.at,
+      detail: DISPO_LABEL[dispo.disposition] || null,
+      next: 'Accounting has it.',
+      action: 'billing',
+    });
+  }
+
+  // Nothing owed. The card is clean and says nothing.
+  return null;
 }
 
 // ctx for laneOf(): stranded = scheduled, date passed, nothing logged.

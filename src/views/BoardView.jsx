@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
-import { LANES, laneOf, hasHold } from '../utils/lanes';
-import { techLabel, missingTech, missingCalendar, isMultiTech, techsOn } from '../utils/scheduledTechs';
-import { fetchBoard, laneCtx } from '../services/jobs';
+import { LANES, laneOf } from '../utils/lanes';
+import { techLabel, isMultiTech, techsOn } from '../utils/scheduledTechs';
+import { fetchBoard, laneCtx, blockerFor } from '../services/jobs';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
 import FinishSheet from './FinishSheet';
@@ -39,100 +39,87 @@ function whenLabel(job) {
   return null;
 }
 
-const DISPO_WORD = {
-  finished:  'Work completed',
-  return:    'Return visit',
-  estimate:  'Estimate needed',
-  unable:    'Unable to complete',
-  cancelled: 'Cancelled / no access',
+// ── The card ─────────────────────────────────────────────────────────────────
+// FOUR ROWS, HARD MAXIMUM.
+//
+//   1  customer + DRH ID           right: age in this lane
+//   2  the issue, one line
+//   3  the blocker — ONE line, only when something is owed
+//   4  tech · when · hours
+//
+// It had nineteen possible elements and five full-width coloured bars, each
+// added the day something turned out to be invisible. They were all answering
+// the same question, so a card showing three of them buried the one that
+// mattered. blockerFor() picks exactly one.
+//
+// Priority is the LEFT EDGE, not a chip — it costs no vertical space.
+// Colour is ownership, never severity: amber is on us, slate is on them.
+
+const TONE = {
+  broken: { fg: '#fca5a5', pip: '#ef4444' },
+  person: { fg: '#c7d2fe', pip: '#818cf8' },
+  us:     { fg: '#fcd34d', pip: '#d97706' },
+  them:   { fg: '#93a6bd', pip: '#64748b' },
+  done:   { fg: '#7fd8cd', pip: '#14b8a6' },
 };
+
+const EDGE = { emergency: '#ff6464', high: '#f3a51f' };
+
+function ageLabel(job) {
+  // How long it has sat where it is. The transition log has carried this since
+  // 3.13 and nothing has ever shown it.
+  const since = job.lane_since || job.updated_at;
+  if (!since) return null;
+  const d = Math.floor((Date.now() - new Date(since).getTime()) / 86400000);
+  return d < 1 ? null : `${d}d`;
+}
 
 function Card({ job, onOpen }) {
   const techs = techsOn(job.assignments);
-  const held = hasHold(job);
-  const when = whenLabel(job);
-  const awaiting = job.awaitingReview || [];
-  const pending = awaiting.filter(a => a.state === 'pending').length;
-  const changes = awaiting.filter(a => a.state === 'changes').length;
+  const when  = whenLabel(job);
+  const blocker = blockerFor(job);
+  const tone  = blocker ? TONE[blocker.tone] : null;
+  const age   = ageLabel(job);
+  const edge  = EDGE[job.priority] || 'transparent';
 
   return (
-    <div style={S.card} onClick={() => onOpen(job)} role="button">
+    <div
+      style={{ ...S.card, borderLeftColor: edge }}
+      onClick={() => onOpen(job)}
+      role="button"
+    >
       <div style={S.cardTop}>
         <span style={S.customer}>
           {job.customer?.name || job.customer_name || 'No customer'}
+          {job.customer_id && <span style={S.drhId}>{job.customer_id}</span>}
         </span>
-        {held && <span style={S.hold}>HOLD</span>}
+        {age && (
+          <span style={{ ...S.age, ...(blocker?.stale ? S.ageHot : {}) }}>{age}</span>
+        )}
       </div>
-
-      {/* Review is a FLAG, not a lane — which is right, but a flag nothing
-          renders is a flag nobody acts on. A card comes back from a tech
-          sitting in good_to_go looking identical to one already approved, so
-          the office has no signal that anything is waiting on them. */}
-      {/* Why a Returns card is sitting there. "Waiting on a price" and
-          "waiting on a part" are different problems owned by different
-          people, and the lane alone said neither. */}
-      {/* Waiting on a PERSON, not a visit. Highest thing on the card because
-          it is the reason nothing is moving. */}
-      {job.openAsks?.length > 0 && (
-        <div style={S.asked}>
-          Waiting on {job.openAsks.map(q => q.tech?.name || 'someone').join(', ')}
-        </div>
-      )}
-
-      {job.waiting && (
-        <div style={{ ...S.waiting, ...(job.waiting.on === 'us' ? S.waitingUs : {}) }}>
-          {job.waiting.label}
-        </div>
-      )}
-
-      {/* Review is per VISIT. A job with two trips can have one cleared and
-          one still owed, so this counts rather than showing a single flag. */}
-      {pending > 0 && (
-        <div style={S.reviewFlag}>
-          <span>
-            {pending === 1 ? 'Needs office review' : `${pending} visits need review`}
-          </span>
-          {job.awaitingReview?.[0]?.disposition && pending === 1 && (
-            <span style={S.dispo}>
-              {DISPO_WORD[job.awaitingReview[0].disposition] || job.awaitingReview[0].disposition}
-            </span>
-          )}
-        </div>
-      )}
-      {changes > 0 && (
-        <div style={S.changesFlag}>Changes requested — with the tech</div>
-      )}
-
-      {/* What the tech said, on every returned card. An approved card should
-          still read as the thing that happened, not just a lane. */}
-      {job.lastEntry?.disposition && pending === 0 && (
-        <div style={S.entryLine}>
-          {DISPO_WORD[job.lastEntry.disposition] || job.lastEntry.disposition}
-          {job.lastEntry.by && ` · ${String(job.lastEntry.by).split('@')[0]}`}
-          {job.lastEntry.hours != null && ` · ${job.lastEntry.hours}h`}
-        </div>
-      )}
-
-      {when && <div style={S.when}>{when}</div>}
 
       {job.issue && job.issue !== 'Test' && <div style={S.issue}>{job.issue}</div>}
 
-      <div style={S.meta}>
-        {/* Nobody assigned is only worth saying once the job is scheduled —
-            before that it is the expected state of the whole lane. */}
-        {missingTech(job) && <span style={S.alarm}>No tech scheduled</span>}
-        {missingCalendar(job) && <span style={S.alarm}>Not on a calendar</span>}
+      {blocker && (
+        <div style={{ ...S.blocker, color: tone.fg }}>
+          <span style={{ ...S.pip, background: tone.pip }} />
+          {blocker.label}
+          {blocker.days != null && blocker.days > 0 && (
+            <span style={S.blockerAge}>{blocker.days}d</span>
+          )}
+        </div>
+      )}
+
+      <div style={S.foot}>
         {techLabel(job.assignments) && (
           <span style={S.owner}>
             {techLabel(job.assignments)}
             {isMultiTech(job.assignments) && ` (${techs.length})`}
           </span>
         )}
-        {job.estimated_hours != null && <span style={S.hours}>{job.estimated_hours}h</span>}
-        {job.priority && job.priority !== 'normal' && (
-          <span style={S.pri}>{job.priority}</span>
-        )}
-        {job.due_date && <span style={S.due}>due {job.due_date}</span>}
+        {when && <span>{when}</span>}
+        {job.estimated_hours != null && <span>{job.estimated_hours}h</span>}
+        {job.due_date && <span>due {job.due_date}</span>}
       </div>
     </div>
   );
@@ -288,39 +275,21 @@ const S = {
   laneMeans: { color: '#64748b', fontSize: 11, marginBottom: 10, lineHeight: 1.3 },
   laneBody: { display: 'flex', flexDirection: 'column', gap: 8 },
   empty: { color: '#475569', fontSize: 12, padding: '12px 4px' },
-  reviewFlag: { marginTop: 6, background: '#78350f', color: '#fde68a',
-                borderRadius: 6, padding: '4px 8px', fontSize: 11.5,
-                fontWeight: 700, display: 'flex', justifyContent: 'space-between',
-                gap: 6, alignItems: 'center' },
-  asked: { marginTop: 6, background: '#1e293b', color: '#a5b4fc',
-           border: '1px solid #3b4a6b', borderRadius: 6, padding: '4px 8px',
-           fontSize: 11.5, fontWeight: 600 },
-  waiting: { marginTop: 6, background: '#1e293b', color: '#94a3b8',
-             borderRadius: 6, padding: '3px 8px', fontSize: 11.5 },
-  waitingUs: { background: '#2a1a06', color: '#fcd34d' },
-  entryLine: { marginTop: 5, color: '#94a3b8', fontSize: 11.5 },
-  dispo: { color: '#fcd34d', fontWeight: 600, fontSize: 11 },
-  changesFlag: { marginTop: 6, background: '#1e3a5f', color: '#bfdbfe',
-                 borderRadius: 6, padding: '4px 8px', fontSize: 11.5 },
-  card: { background: '#1a2740', borderRadius: 8, padding: 10 },
-  cardTop: { display: 'flex', justifyContent: 'space-between', gap: 6 },
+  card: { background: '#11243a', borderRadius: 10, padding: '11px 12px',
+          borderLeft: '3px solid transparent', marginBottom: 8, cursor: 'pointer' },
+  cardTop: { display: 'flex', justifyContent: 'space-between',
+             alignItems: 'baseline', gap: 8 },
+  drhId: { fontFamily: 'ui-monospace, monospace', fontSize: 11, color: '#687f99',
+           fontWeight: 400, marginLeft: 6 },
+  age: { fontFamily: 'ui-monospace, monospace', fontSize: 11, color: '#687f99', flex: 'none' },
+  ageHot: { color: '#f3a51f' },
+  blocker: { display: 'flex', alignItems: 'center', gap: 7, marginTop: 9,
+             fontSize: 12, fontWeight: 600, lineHeight: 1.3 },
+  pip: { width: 6, height: 6, borderRadius: '50%', flex: 'none' },
+  blockerAge: { marginLeft: 'auto', color: '#687f99', fontSize: 11, fontWeight: 400 },
+  foot: { display: 'flex', flexWrap: 'wrap', gap: 9, marginTop: 9,
+          fontSize: 11.5, color: '#687f99' },
   customer: { color: '#f1f5f9', fontWeight: 600, fontSize: 13 },
-  hold: { background: '#d97706', color: '#1a1200', fontSize: 9, fontWeight: 800,
-          padding: '2px 5px', borderRadius: 4, alignSelf: 'flex-start' },
-  when: { color: '#7dd3fc', fontSize: 11, fontWeight: 700, marginTop: 5 },
   issue: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
-  meta: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', fontSize: 11 },
   owner: { color: '#38bdf8' },
-  alarm: { color: '#f87171', fontWeight: 700 },
-  hours: { color: '#94a3b8' },
-  due: { color: '#94a3b8' },
-  pri: { color: '#fbbf24', textTransform: 'uppercase', fontWeight: 700 },
-  moveBtn: { marginTop: 8, width: '100%', background: '#243350', color: '#cbd5e1',
-             border: 0, borderRadius: 6, padding: '6px', fontSize: 12, cursor: 'pointer' },
-  moveList: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
-  moveOpt: { textAlign: 'left', background: '#2b3d5e', color: '#e2e8f0', border: 0,
-             borderRadius: 6, padding: '6px 8px', fontSize: 12, cursor: 'pointer',
-             display: 'flex', flexDirection: 'column', gap: 2 },
-  moveOptOff: { opacity: 0.45, cursor: 'not-allowed' },
-  why: { fontSize: 10, color: '#fca5a5' },
 };
