@@ -17,7 +17,7 @@ import { supabase } from '../services/supabaseClient';
 
 const PRIORITIES = ['low', 'normal', 'high', 'emergency'];
 
-export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule, onFinish }) {
+export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule, onFinish, onReview }) {
   const [draft, setDraft] = useState(job);
   const [entries, setEntries] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -226,7 +226,14 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
           </button>
           {techs.length > 0 && onFinish && (
             <button style={S.finish} onClick={() => onFinish(draft)}>
-              Finish — log hours
+              Finish — how did it go?
+            </button>
+          )}
+          {/* Review is a flag on the job, not a lane, so the way in is the
+              card itself once a tech has dispositioned it. */}
+          {onReview && draft.review_state === 'pending' && (
+            <button style={S.review} onClick={() => onReview(draft)}>
+              Office review
             </button>
           )}
         </div>
@@ -277,6 +284,9 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
 }
 
 const S = {
+  review: { background: '#78350f', color: '#fed7aa', border: 0, borderRadius: 8,
+            padding: '10px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' },
+
   backdrop: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)',
               display: 'flex', justifyContent: 'flex-end', zIndex: 50 },
   sheet: { background: '#111c2e', width: 'min(460px, 100%)', height: '100%',

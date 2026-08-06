@@ -413,10 +413,6 @@ export async function fetchScheduleRange(fromISO, toISO) {
 }
 
 // ── Notes ────────────────────────────────────────────────────────────────────
-// job_history is the one notes store. A note is a history row that does not
-// change status — from and to are the same, so the feed reads as one thread
-// instead of splitting "notes" and "activity" into two lists that disagree.
-// ── Notes ────────────────────────────────────────────────────────────────────
 // Notes live in `notes`, not in job_history.
 //
 // They were in job_history because 3.4.1 collapsed several competing note paths
@@ -588,10 +584,33 @@ export async function fetchCustomerNotes(customerId) {
 // scheduled job whose date passed fell into Needs action with no way out
 // (lanes.js laneOf, the hasTimeEntry branch).
 //
-// What the tech decides:  hours, what happened, finished or needs another trip.
+// What the tech decides:  one disposition and a note. Nothing else.
+//   Hours are optional and usually entered later, in batch.
+//   Materials used are logged after the fact, not at the exit.
 // What the tech NEVER decides: whether it bills. Per lanes.js decision 8 that
 // is an Accounting call made later against the hours. `billable` is left at its
 // column default (true) and `non_billable_reason` is not touched here.
+// Five dispositions, and the status each one lands on.
+//
+//   finished   → good_to_go       the work is done
+//   return     → return_pending   another trip is needed
+//   estimate   → return_pending   another trip, gated on a price going out
+//   unable     → (no move)        tech could not do it; card stays live
+//   cancelled  → (no move)        no access / called off; card stays live
+//
+// 'estimate' deliberately does NOT write estimate_sent. Nothing has been sent —
+// the estimate has not even been priced yet. Estimates stall in the office
+// before they go out, so a card reading estimate_sent while it sits unpriced on
+// a desk makes "waiting on us" indistinguishable from "waiting on the customer".
+// estimate_sent gets written later, when it actually goes out.
+const DISPOSITION_TARGET = {
+  finished:  'good_to_go',
+  return:    'return_pending',
+  estimate:  'return_pending',
+  unable:    null,
+  cancelled: null,
+};
+
 export async function finishWork(job, {
   assignmentId,
   techName,
@@ -599,12 +618,28 @@ export async function finishWork(job, {
   hours,
   notes,
   materials,
-  disposition = 'finished',   // 'finished' | 'return'
-  returnReason,
+  partsRequested,             // [{ description, qty }] — optional
+  disposition = 'finished',
   actor,
 } = {}) {
-  const h = Number(hours);
-  if (!h || h <= 0) return { ok: false, reason: 'Enter the hours worked' };
+  if (!(disposition in DISPOSITION_TARGET)) {
+    return { ok: false, reason: `Unknown disposition: ${disposition}` };
+  }
+
+  // The note is the one thing always required. It is what the office reads and
+  // the only field typed at the job.
+  const body = String(notes || '').trim();
+  if (!body) return { ok: false, reason: 'Say what happened' };
+
+  // Hours are NOT required.
+  //
+  // They used to be, and it was wrong: hours are entered in batch, often on a
+  // Friday for the whole week, and a tech standing in a parking lot should not
+  // be inventing a number to get the card off his screen. A missing hour count
+  // surfaces to the office as a warning on review, where it is an accounting
+  // problem — the same place a wrong guessed number would have surfaced, only
+  // now it is visibly absent instead of quietly fabricated.
+  const h = Number(hours) || 0;
 
   // The trip being closed out. Its (calendar_id, calendar_event_id) pair is what
   // the time entry records and what retires to Completed — there is no
@@ -618,14 +653,27 @@ export async function finishWork(job, {
       .single();
     assignment = data || null;
   }
-  if (disposition === 'return' && !String(returnReason || '').trim()) {
-    return { ok: false, reason: 'Say why it needs another trip' };
-  }
+  // Parts the tech asked for. A REQUEST — what is needed for the next trip —
+  // not a record of what was used today. That is job_materials, entered later.
+  // requested_at defaults; ordered_at stays null until the office acts, which
+  // is what makes "nobody ordered these" a queryable fact instead of a note
+  // somebody has to remember to re-read.
+  const wanted = (partsRequested || [])
+    .filter(x => String(x?.description || '').trim())
+    .map(x => ({ description: String(x.description).trim(), qty: Number(x.qty) || 1 }));
+
+  const fullNote = wanted.length
+    ? `${body}\n\nParts requested from the field:\n`
+      + wanted.map(x => `  · ${x.description} ×${x.qty}`).join('\n')
+    : body;
 
   const totalMinutes = Math.round(h * 60);
 
   // 1. The hours. This row is what Accounting bills from.
-  const { error: teErr } = await supabase.from('time_entries').insert({
+  //    Only written when there are hours. No zero-hour placeholder rows —
+  //    an empty row and a genuine zero would be indistinguishable, and Billing
+  //    reads this table to decide what is unbilled.
+  const { error: teErr } = h > 0 ? await supabase.from('time_entries').insert({
     job_id: job.id,
     customer_id: job.customer_id || job.customer?.id || null,
     customer_name_raw: job.customer?.name || job.customer_name || null,
@@ -634,20 +682,20 @@ export async function finishWork(job, {
     total_minutes: totalMinutes,
     entry_method: 'manual',
     disposition,
-    notes: notes || null,
+    notes: fullNote,
     materials: materials || null,
     calendar_event_id: assignment?.calendar_event_id || null,
     calendar_id: assignment?.calendar_id || null,
     event_start: assignment?.scheduled_for || null,
-  });
+  }) : { error: null };
   if (teErr) return { ok: false, reason: teErr.message };
 
   // 2. Close out this tech's assignment.
   if (assignmentId) {
     await supabase.from('job_assignments').update({
       is_complete: disposition === 'finished',
-      actual_hours: h,
-      completion_notes: notes || null,
+      actual_hours: h > 0 ? h : null,
+      completion_notes: fullNote,
     }).eq('id', assignmentId);
   }
 
@@ -671,34 +719,75 @@ export async function finishWork(job, {
     .from('job_assignments').select('id, is_complete').eq('job_id', job.id);
 
   const openAssignments = (remaining || []).filter(a => !a.is_complete);
-  let movedTo = null;
 
-  if (disposition === 'return') {
-    movedTo = 'return_pending';
+  // 'unable' and 'cancelled' move nothing. The trip failed; the work is still
+  // owed. Parking them on a status of their own would put two dead words in a
+  // vocabulary that was deliberately cut to seven — the fact that the visit
+  // did not happen belongs in the note and the history row, not the lane.
+  const movedTo = DISPOSITION_TARGET[disposition];
+
+  if (movedTo) {
     await supabase.from('jobs').update({
-      status: 'return_pending',
-      updated_at: new Date().toISOString(),
-    }).eq('id', job.id);
-  } else {
-    // 'finished' — the work is done. Move it, and flag any tech who still
-    // owes hours rather than holding the whole card hostage to them.
-    movedTo = 'good_to_go';
-    await supabase.from('jobs').update({
-      status: 'good_to_go',
+      status: movedTo,
       updated_at: new Date().toISOString(),
     }).eq('id', job.id);
   }
+
+  // Parts request rows. Attached to the ESTIMATE when there is one, so the
+  // office sees them where they will act on them.
+  let estimateId = null;
+
+  // An 'estimate' disposition creates the estimate in DRAFT with no amount.
+  // The tech scoped it; nobody has priced it. That gap is the thing worth
+  // measuring, and it only exists as a measurable if the row is created now.
+  if (disposition === 'estimate') {
+    const { data: est } = await supabase.from('estimates').insert({
+      customer_id: job.customer_id || job.customer?.id || null,
+      job_id: job.id,
+      status: 'draft',
+      description: body,
+      created_by: actor || null,
+    }).select('id').single();
+    estimateId = est?.id || null;
+  }
+
+  if (wanted.length) {
+    await supabase.from('parts_orders').insert(
+      wanted.map(x => ({
+        job_id: estimateId ? null : job.id,
+        estimate_id: estimateId,
+        description: x.description,
+        qty: x.qty,
+        requested_by: actor || null,
+      }))
+    );
+  }
+
+  // Every disposition goes to the office. Nothing is blocked from REACHING
+  // review — gaps are visible there, which is the whole point.
+  await supabase.from('jobs')
+    .update({ review_state: 'pending' })
+    .eq('id', job.id);
+
+  const who   = techName || actor || 'Tech';
+  const clock = h > 0 ? `logged ${h}h` : 'no hours entered';
+
+  const HEADLINE = {
+    finished:  `${who} — finished, ${clock}`
+               + (openAssignments.length
+                   ? ` (${openAssignments.length} tech${openAssignments.length > 1 ? 's' : ''} still owe hours)`
+                   : ''),
+    return:    `${who} — needs another trip, ${clock}`,
+    estimate:  `${who} — estimate needed, ${clock}`,
+    unable:    `${who} — unable to complete, ${clock}`,
+    cancelled: `${who} — cancelled / no access, ${clock}`,
+  };
 
   await supabase.from('job_history').insert({
     job_id: job.id,
     from_status: job.status,
     to_status: movedTo || job.status,
-    notes: disposition === 'return'
-      ? `${techName || actor || 'Tech'} logged ${h}h — needs another trip: ${returnReason}`
-      : `${techName || actor || 'Tech'} logged ${h}h — finished`
-        + (openAssignments.length
-            ? ` (${openAssignments.length} tech${openAssignments.length > 1 ? 's' : ''} still owe hours)`
-            : ''),
+    notes: `${HEADLINE[disposition]}\n${fullNote}`,
     changed_by: actor || null,
   });
 
@@ -716,7 +805,7 @@ export async function finishWork(job, {
   const calId = assignment?.calendar_id;
   const evId  = assignment?.calendar_event_id;
 
-  if (calId && evId && disposition === 'return') {
+  if (calId && evId && (disposition === 'return' || disposition === 'estimate')) {
     // Title flag, not a description dump — visible in month view without
     // opening the event. Guarded so repeat dispositions do not stack it.
     // Prefix the EXISTING title. Rebuilding it from the customer name threw
@@ -726,7 +815,7 @@ export async function finishWork(job, {
     if (base) await updateEvent(calId, evId, { title: `RETURN NEEDED — ${base}` });
   }
 
-  return { ok: true, movedTo, openCount: openAssignments.length, hours: h };
+  return { ok: true, movedTo, disposition, estimateId, openCount: openAssignments.length, hours: h };
 }
 
 // A hold is a badge. It does not move the card out of its lane.
@@ -805,4 +894,192 @@ export async function closeJob(job, actor) {
   }
 
   return { ok: true };
+}
+
+// ── Materials, parts, review ─────────────────────────────────────────────────
+// The paperwork tail. None of this happens at the job — a tech at a customer's
+// door is not typing a parts list, and one who does is guessing. It happens in
+// the truck, or at the office, after.
+
+// What came off the truck. Backward-looking. No prices: cost vs sell is a
+// decision made somewhere else, and putting a number here would force it.
+export async function logMaterials(jobId, lines, actor, techId) {
+  const rows = (lines || [])
+    .filter(x => String(x?.description || '').trim())
+    .map(x => ({
+      job_id: jobId,
+      tech_id: techId || null,
+      description: String(x.description).trim(),
+      qty: Number(x.qty) || 1,
+      source: x.source || 'truck_stock',
+      entered_by: actor || null,
+    }));
+  if (!rows.length) return { ok: false, reason: 'Add at least one item, or say nothing was used' };
+
+  const { error } = await supabase.from('job_materials').insert(rows);
+  if (error) return { ok: false, reason: error.message };
+
+  // Adding materials answers the question, so any earlier "nothing used" is
+  // no longer true.
+  await supabase.from('jobs')
+    .update({ materials_none_at: null, materials_none_by: null })
+    .eq('id', jobId);
+  return { ok: true, count: rows.length };
+}
+
+// "Nothing used" is an ANSWER, not a blank. Without it, a job where nothing was
+// used and a job nobody has got to look identical.
+export async function markNoMaterials(jobId, actor) {
+  const { error } = await supabase.from('jobs').update({
+    materials_none_at: new Date().toISOString(),
+    materials_none_by: actor || null,
+  }).eq('id', jobId);
+  return error ? { ok: false, reason: error.message } : { ok: true };
+}
+
+export async function listMaterials(jobId) {
+  const { data } = await supabase.from('job_materials')
+    .select('*').eq('job_id', jobId).order('created_at');
+  return data || [];
+}
+
+export async function listParts({ jobId, estimateId } = {}) {
+  let q = supabase.from('parts_orders').select('*').order('requested_at');
+  if (jobId) q = q.eq('job_id', jobId);
+  if (estimateId) q = q.eq('estimate_id', estimateId);
+  const { data } = await q;
+  return data || [];
+}
+
+// A part goes from requested → ordered. Tracking is optional because it is not
+// always known at the moment the order is placed.
+export async function markPartOrdered(partId, tracking, actor) {
+  const { error } = await supabase.from('parts_orders').update({
+    ordered_at: new Date().toISOString(),
+    ordered_by: actor || null,
+    tracking_number: String(tracking || '').trim() || null,
+  }).eq('id', partId);
+  return error ? { ok: false, reason: error.message } : { ok: true };
+}
+
+// Arrival is what releases a return trip to be scheduled.
+export async function markPartArrived(partId) {
+  const { error } = await supabase.from('parts_orders')
+    .update({ arrived_at: new Date().toISOString() }).eq('id', partId);
+  return error ? { ok: false, reason: error.message } : { ok: true };
+}
+
+// Not "I invoiced it" — Overwatch does not touch QBO and cannot claim that.
+// It means seen and handled, stamped with who and when.
+export async function acknowledgePartBilling(partId, actor) {
+  const { error } = await supabase.from('parts_orders').update({
+    billing_acknowledged_at: new Date().toISOString(),
+    billing_acknowledged_by: actor || null,
+  }).eq('id', partId);
+  return error ? { ok: false, reason: error.message } : { ok: true };
+}
+
+// The escape hatch on the parts block, and deliberately a short list rather
+// than free text — a write-off you can count is a write-off you can act on.
+export const NON_BILLABLE_REASONS = [
+  { key: 'warranty',             label: 'Warranty' },
+  { key: 'callback',             label: 'Callback — our return trip' },
+  { key: 'our_error',            label: 'Our error' },
+  { key: 'goodwill',             label: 'Goodwill / customer relationship' },
+  { key: 'monitoring_agreement', label: 'Covered under monitoring agreement' },
+  { key: 'other',                label: 'Other' },
+];
+
+export async function markPartNotBillable(partId, reason, note, actor) {
+  if (!reason) return { ok: false, reason: 'Pick a reason' };
+  if (reason === 'other' && !String(note || '').trim()) {
+    return { ok: false, reason: 'Say what "other" means' };
+  }
+  const { error } = await supabase.from('parts_orders').update({
+    billable: false,
+    non_billable_reason: reason,
+    non_billable_note: String(note || '').trim() || null,
+    billing_acknowledged_at: new Date().toISOString(),
+    billing_acknowledged_by: actor || null,
+  }).eq('id', partId);
+  return error ? { ok: false, reason: error.message } : { ok: true };
+}
+
+// ── Office review ────────────────────────────────────────────────────────────
+// Review is a FLAG on the job, not an eighth status. The card is good_to_go
+// throughout — review says whether a human has looked at it.
+//
+// Time and materials WARN. Parts BLOCK. The difference: missing hours are a
+// gap somebody can fill from memory or a timesheet, but a billable part that
+// arrived and nobody confirmed is money already spent that is about to vanish
+// off the invoice. One is incomplete paperwork; the other is a leak.
+export async function reviewGaps(job) {
+  const [{ count: timeCount }, { count: matCount }, parts] = await Promise.all([
+    supabase.from('time_entries').select('id', { count: 'exact', head: true }).eq('job_id', job.id),
+    supabase.from('job_materials').select('id', { count: 'exact', head: true }).eq('job_id', job.id),
+    listParts({ jobId: job.id }),
+  ]);
+
+  const unconfirmed = parts.filter(
+    p => p.arrived_at && p.billable && !p.billing_acknowledged_at
+  );
+
+  return {
+    time:      { ok: (timeCount || 0) > 0, blocks: false },
+    materials: { ok: (matCount || 0) > 0 || !!job.materials_none_at, blocks: false },
+    parts:     { ok: unconfirmed.length === 0, blocks: true, unconfirmed },
+  };
+}
+
+export async function approveForBilling(job, actor) {
+  const gaps = await reviewGaps(job);
+  if (!gaps.parts.ok) {
+    const n = gaps.parts.unconfirmed.length;
+    return {
+      ok: false,
+      reason: `${n} billable part${n === 1 ? '' : 's'} arrived and nobody has confirmed `
+            + `${n === 1 ? 'it is' : 'they are'} on the bill. Confirm or mark not billable first.`,
+    };
+  }
+  const { error } = await supabase.from('jobs').update({
+    review_state: 'approved',
+    reviewed_by: actor || null,
+    reviewed_at: new Date().toISOString(),
+  }).eq('id', job.id);
+  return error ? { ok: false, reason: error.message } : { ok: true, warnings: gaps };
+}
+
+// Kicks the job back to the tech. The note is required — "changes requested"
+// with nothing attached is a dead end for whoever picks it up.
+export async function requestChanges(job, note, actor) {
+  const body = String(note || '').trim();
+  if (!body) return { ok: false, reason: 'Say what needs to change' };
+
+  const { error } = await supabase.from('jobs').update({
+    review_state: 'changes',
+    reviewed_by: actor || null,
+    reviewed_at: new Date().toISOString(),
+  }).eq('id', job.id);
+  if (error) return { ok: false, reason: error.message };
+
+  await supabase.from('notes').insert({
+    job_id: job.id,
+    customer_id: job.customer_id || job.customer?.id || null,
+    body,
+    kind: 'office',
+    author_email: actor || null,
+  });
+  return { ok: true };
+}
+
+// ── Capacity ─────────────────────────────────────────────────────────────────
+// 40 hours a week. Green to 80%, amber to 90%, red above.
+export function utilization(bookedHours, weeklyHours = 40) {
+  if (!weeklyHours) return null;                    // function techs carry no capacity
+  const pct = (Number(bookedHours) || 0) / weeklyHours;
+  return {
+    pct,
+    state: pct > 0.9 ? 'red' : pct > 0.8 ? 'amber' : 'green',
+    color: pct > 0.9 ? '#dc2626' : pct > 0.8 ? '#d97706' : '#14b8a6',
+  };
 }

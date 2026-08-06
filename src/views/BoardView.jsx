@@ -5,6 +5,8 @@ import { fetchBoard, laneCtx } from '../services/jobs';
 import TicketSheet from './TicketSheet';
 import SchedulerModal from './SchedulerModal';
 import FinishSheet from './FinishSheet';
+import OfficeReview from './OfficeReview';
+import MaterialsSheet from './MaterialsSheet';
 
 // ============================================================================
 // BoardView — the six lanes. No second vocabulary; everything comes from
@@ -82,6 +84,11 @@ export default function BoardView({ actor }) {
   const [schedJob, setSchedJob] = useState(null);
   const [finishJob, setFinishJob] = useState(null);
 
+  // Review is a flag, not a lane — so the way in is a card whose review_state
+  // is pending, not a separate status column on the board.
+  const [reviewJob, setReviewJob] = useState(null);
+  const [materialsJob, setMaterialsJob] = useState(null);
+
   const load = () =>
     fetchBoard()
       .then(setJobs)
@@ -138,6 +145,7 @@ export default function BoardView({ actor }) {
           onChanged={refresh}
           onSchedule={j => { setOpenJob(null); setSchedJob(j); }}
           onFinish={j => { setOpenJob(null); setFinishJob(j); }}
+          onReview={j => { setOpenJob(null); setReviewJob(j); }}
         />
       )}
 
@@ -147,6 +155,25 @@ export default function BoardView({ actor }) {
           actor={actor}
           onClose={() => setSchedJob(null)}
           onBooked={refresh}
+        />
+      )}
+
+      {reviewJob && (
+        <OfficeReview
+          job={reviewJob}
+          actor={actor}
+          onClose={() => setReviewJob(null)}
+          onDone={refresh}
+          onEnterMaterials={j => { setReviewJob(null); setMaterialsJob(j); }}
+        />
+      )}
+
+      {materialsJob && (
+        <MaterialsSheet
+          job={materialsJob}
+          actor={actor}
+          onClose={() => setMaterialsJob(null)}
+          onSaved={refresh}
         />
       )}
 

@@ -1,7 +1,7 @@
 {
   "name": "overwatch-v3",
   "private": true,
-  "version": "3.10.2",
+  "version": "3.12.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

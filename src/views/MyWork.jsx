@@ -3,6 +3,7 @@ import { fetchMyDay, addNote, fetchNotes } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
 import FinishSheet from './FinishSheet';
+import MaterialsSheet from './MaterialsSheet';
 
 // ============================================================================
 // MyWork — what one tech is doing today, and everything they need to do it.
@@ -37,6 +38,15 @@ export default function MyWork({ actor }) {
 
   const [openStop, setOpenStop] = useState(null);
   const [finishStop, setFinishStop] = useState(null);
+  const [materialsJob, setMaterialsJob] = useState(null);
+
+  // ── The tail ─────────────────────────────────────────────────────────────
+  // Work does not end when the tech taps Done. Hours get entered later, often
+  // in batch; materials get remembered in the truck; and the office may kick
+  // something back. Those are open items on jobs that have already moved on,
+  // so they cannot live in the day's stop list — a job finished on Monday is
+  // not on Thursday's screen, but its missing materials still are.
+  const [attention, setAttention] = useState([]);
 
   const [events, setEvents] = useState([]);
   const [calNote, setCalNote] = useState(null);
@@ -70,6 +80,57 @@ export default function MyWork({ actor }) {
   }, [techId, day]);
 
   useEffect(() => { load(); }, [load]);
+
+  const loadAttention = useCallback(async () => {
+    if (!techId) { setAttention([]); return; }
+
+    // Jobs this tech has closed out in the last two weeks. Older than that and
+    // nobody is going to reconstruct it accurately anyway.
+    const since = new Date(Date.now() - 14 * 86400000).toISOString();
+    const { data: mine } = await supabase
+      .from('job_assignments')
+      .select(`
+        job_id,
+        job:jobs (
+          id, status, review_state, materials_none_at, updated_at,
+          customer:customers ( id, name )
+        )
+      `)
+      .eq('tech_id', techId)
+      .eq('is_complete', true)
+      .gte('updated_at', since);
+
+    const jobs = (mine || []).map(a => a.job).filter(Boolean);
+    if (!jobs.length) { setAttention([]); return; }
+    const ids = jobs.map(j => j.id);
+
+    const [{ data: mats }, { data: times }] = await Promise.all([
+      supabase.from('job_materials').select('job_id').in('job_id', ids),
+      supabase.from('time_entries').select('job_id').in('job_id', ids),
+    ]);
+    const hasMat  = new Set((mats  || []).map(r => r.job_id));
+    const hasTime = new Set((times || []).map(r => r.job_id));
+
+    const items = [];
+    for (const j of jobs) {
+      const name = j.customer?.name || 'Customer';
+      if (j.review_state === 'changes') {
+        items.push({ key: `chg-${j.id}`, kind: 'changes', job: j,
+                     label: 'Changes requested', detail: name });
+      }
+      if (!hasMat.has(j.id) && !j.materials_none_at) {
+        items.push({ key: `mat-${j.id}`, kind: 'materials', job: j,
+                     label: 'Materials not logged', detail: name });
+      }
+      if (!hasTime.has(j.id)) {
+        items.push({ key: `time-${j.id}`, kind: 'time', job: j,
+                     label: 'Time not entered', detail: name });
+      }
+    }
+    setAttention(items);
+  }, [techId]);
+
+  useEffect(() => { loadAttention(); }, [loadAttention]);
 
   // Calendar context for the same day, from this tech's calendar.
   useEffect(() => {
@@ -143,6 +204,35 @@ export default function MyWork({ actor }) {
       )}
 
       {err && <div style={S.err}>{err}</div>}
+
+      {/* ── Needs your attention ────────────────────────────────────────
+          The paperwork tail from jobs already dispositioned. Every row names
+          the job — a bare count tells a tech there is a problem without
+          telling them where it is. */}
+      {attention.length > 0 && (
+        <div style={S.attnWrap}>
+          <div style={S.attnHead}>Needs your attention</div>
+          {attention.map(it => (
+            <button
+              key={it.key}
+              style={S.attn}
+              onClick={() => {
+                if (it.kind === 'materials') setMaterialsJob(it.job);
+                else if (it.kind === 'changes') setOpenStop(
+                  stops.find(s => s.job?.id === it.job.id) || null
+                );
+              }}
+            >
+              <span style={{ ...S.attnDot, background: ATTN_TINT[it.kind] }} />
+              <span style={S.attnText}>
+                <span style={S.attnLabel}>{it.label}</span>
+                <span style={S.attnDetail}>{it.detail}</span>
+              </span>
+              <span style={S.attnChev}>›</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ── Summary ─────────────────────────────────────────────────────── */}
       {!loading && stops.length > 0 && (
@@ -235,6 +325,16 @@ export default function MyWork({ actor }) {
         />
       )}
 
+      {materialsJob && (
+        <MaterialsSheet
+          job={materialsJob}
+          actor={actor}
+          techId={techId}
+          onClose={() => setMaterialsJob(null)}
+          onSaved={loadAttention}
+        />
+      )}
+
       {finishStop && (
         <FinishSheet
           job={{
@@ -250,7 +350,7 @@ export default function MyWork({ actor }) {
           }}
           actor={actor}
           onClose={() => setFinishStop(null)}
-          onFinished={() => { setFinishStop(null); load(); }}
+          onFinished={() => { setFinishStop(null); load(); loadAttention(); }}
         />
       )}
     </div>
@@ -392,7 +492,25 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
   );
 }
 
+const ATTN_TINT = {
+  materials: '#d97706',
+  time:      '#3b82f6',
+  changes:   '#dc2626',
+};
+
 const S = {
+  attnWrap: { margin: '14px 0 4px', background: '#0f1b2e', border: '1px solid #1e293b',
+              borderRadius: 12, overflow: 'hidden' },
+  attnHead: { color: '#94a3b8', fontSize: 13, fontWeight: 700, padding: '12px 14px 8px' },
+  attn: { width: '100%', display: 'flex', alignItems: 'center', gap: 11,
+          background: 'transparent', border: 0, borderTop: '1px solid #16233a',
+          padding: '12px 14px', cursor: 'pointer', textAlign: 'left' },
+  attnDot: { width: 9, height: 9, borderRadius: 5, flexShrink: 0 },
+  attnText: { flex: 1, display: 'flex', flexDirection: 'column', gap: 2 },
+  attnLabel: { color: '#e2e8f0', fontSize: 14, fontWeight: 600 },
+  attnDetail: { color: '#64748b', fontSize: 12 },
+  attnChev: { color: '#475569', fontSize: 16 },
+
   wrap: { padding: 14, background: '#0b1220', maxWidth: 560, margin: '0 auto' },
   head: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 },
   who: { color: '#f1f5f9', fontSize: 17, fontWeight: 700,
