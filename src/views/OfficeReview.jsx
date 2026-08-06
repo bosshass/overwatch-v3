@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   reviewGaps, approveForBilling, requestChanges,
   acknowledgePartBilling, markPartNotBillable, NON_BILLABLE_REASONS,
+  dispositionsFor,
 } from '../services/jobs';
 
 // ============================================================================
@@ -30,15 +31,36 @@ const ago = iso => {
   return h > 0 ? `${h}h` : 'just now';
 };
 
+const DISPO_WORD = {
+  finished:  'Work completed',
+  return:    'Return visit needed',
+  estimate:  'Estimate needed',
+  unable:    'Unable to complete',
+  cancelled: 'Cancelled / no access',
+};
+
 export default function OfficeReview({ job, actor, onClose, onDone, onEnterTime, onEnterMaterials }) {
   const [gaps, setGaps]   = useState(null);
   const [note, setNote]   = useState('');
+  const [said, setSaid]   = useState(null);   // what the tech reported
   const [busy, setBusy]   = useState(false);
   const [err, setErr]     = useState(null);
   const [nbFor, setNbFor] = useState(null);   // part id awaiting a not-billable reason
 
   const load = () => reviewGaps(job).then(setGaps);
-  useEffect(() => { load(); }, [job.id]);
+
+  useEffect(() => {
+    load();
+    // The visit's own report. Falls back to the job's latest disposition when
+    // the caller did not name one.
+    (async () => {
+      const ids = (job.assignments || []).map(a => a.id).filter(Boolean);
+      if (!ids.length) { setSaid(null); return; }
+      const d = await dispositionsFor(ids);
+      const latest = Object.values(d).sort((a, b) => new Date(b.at) - new Date(a.at))[0];
+      setSaid(latest || null);
+    })();
+  }, [job.id]);
 
   const run = async (fn) => {
     setBusy(true); setErr(null);
@@ -84,12 +106,35 @@ export default function OfficeReview({ job, actor, onClose, onDone, onEnterTime,
 
         {err && <div style={S.err}>{err}</div>}
 
+        {/* WHAT THE TECH SAID, first and largest.
+            This screen used to open with "Disposition: return pending" — the
+            lane, not the report — and the note the tech typed at the customer's
+            door was not on it at all. The office was being asked to approve
+            work it could not read. Everything below is a checklist; this is the
+            thing being reviewed. */}
+        {said && (
+          <div style={S.said}>
+            <div style={S.saidWord}>
+              {DISPO_WORD[said.disposition] || said.disposition}
+            </div>
+            {said.body && <div style={S.saidBody}>{said.body}</div>}
+            <div style={S.saidWho}>
+              {(said.by || 'tech').split('@')[0]} ·{' '}
+              {new Date(said.at).toLocaleString(undefined,
+                { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              {said.hours != null && ` · ${said.hours}h`}
+            </div>
+          </div>
+        )}
+
         {!gaps ? (
           <div style={S.loading}>Checking…</div>
         ) : (
           <>
             <div style={S.card}>
-              <Row ok label="Disposition" value={job.status?.replace(/_/g, ' ') || '—'} />
+              <Row ok={!!said} label="Disposition"
+                   value={said ? (DISPO_WORD[said.disposition] || said.disposition)
+                               : 'Not closed out'} />
               <Row
                 ok={gaps.time.ok} label="Time"
                 value={gaps.time.ok ? 'Entered' : 'Not entered'}
@@ -212,6 +257,12 @@ const S = {
          marginTop: 12, fontSize: 13 },
   loading: { color: '#64748b', fontSize: 13, marginTop: 20 },
 
+  said: { background: '#122a2c', border: '1px solid #14b8a6', borderRadius: 10,
+          padding: '16px 18px', margin: '0 0 14px' },
+  saidWord: { color: '#7fd8cd', fontSize: 16, fontWeight: 700 },
+  saidBody: { color: '#e2e8f0', fontSize: 14.5, lineHeight: 1.55, marginTop: 10,
+              whiteSpace: 'pre-wrap' },
+  saidWho: { color: '#64748b', fontSize: 12, marginTop: 10 },
   card: { marginTop: 16, background: '#0f1b2e', border: '1px solid #1e293b',
           borderRadius: 12, overflow: 'hidden' },
   row: { display: 'flex', alignItems: 'center', gap: 12, padding: '13px 14px',

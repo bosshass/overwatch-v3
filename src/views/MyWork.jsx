@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchMyDay, addNote, fetchNotes, dispositionsFor, reviewStates } from '../services/jobs';
+import { fetchMyDay, addNote, fetchNotes, dispositionsFor, reviewStates,
+         myQuestions } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
 import FinishSheet from './FinishSheet';
 import MaterialsSheet from './MaterialsSheet';
 import MyHours from './MyHours';
+import AskSheet from './AskSheet';
 
 // ============================================================================
 // MyWork — what one tech is doing today, and everything they need to do it.
@@ -41,6 +43,7 @@ export default function MyWork({ actor }) {
   const [finishStop, setFinishStop] = useState(null);
   const [materialsJob, setMaterialsJob] = useState(null);
   const [hoursOpen, setHoursOpen] = useState(false);
+  const [answering, setAnswering] = useState(null);   // a question aimed at me
   // assignmentId -> what was declared. A stop that has one cannot declare again.
   const [declared, setDeclared] = useState({});
   const [reviews, setReviews] = useState({});
@@ -110,7 +113,16 @@ export default function MyWork({ actor }) {
       .gte('updated_at', since);
 
     const trips = (mine || []).filter(a => a.job);
-    if (!trips.length) { setAttention([]); return; }
+    if (!trips.length) {
+      // No visits does NOT mean nothing owed — an ask stands on its own.
+      const only = await myQuestions(techId);
+      setAttention(only.map(q => ({
+        key: `ask-${q.id}`, kind: 'ask', job: q.job, question: q,
+        label: `${(q.asked_by || 'Someone').split('@')[0]} needs an answer`,
+        detail: `${q.job?.customer?.name || 'A job'} — ${q.body}`,
+      })));
+      return;
+    }
     const ids = [...new Set(trips.map(a => a.job_id))];
 
     // Materials are a JOB fact — what went into the building. Hours are a TRIP
@@ -162,6 +174,17 @@ export default function MyWork({ actor }) {
                      label: 'Materials not logged', detail: name });
       }
     }
+    // Things a person has been ASKED. Not a visit, not paperwork — someone is
+    // blocked waiting on them, which outranks both.
+    const asks = await myQuestions(techId);
+    for (const q of asks) {
+      items.unshift({
+        key: `ask-${q.id}`, kind: 'ask', job: q.job, question: q,
+        label: `${(q.asked_by || 'Someone').split('@')[0]} needs an answer`,
+        detail: `${q.job?.customer?.name || 'A job'} — ${q.body}`,
+      });
+    }
+
     setAttention(items);
   }, [techId]);
 
@@ -255,7 +278,8 @@ export default function MyWork({ actor }) {
               key={it.key}
               style={S.attn}
               onClick={() => {
-                if (it.kind === 'materials') setMaterialsJob(it.job);
+                if (it.kind === 'ask') setAnswering(it);
+                else if (it.kind === 'materials') setMaterialsJob(it.job);
                 else if (it.kind === 'time') setHoursOpen(true);
                 else if (it.kind === 'changes') setOpenStop(
                   stops.find(s => s.job?.id === it.job.id) || null
@@ -373,6 +397,16 @@ export default function MyWork({ actor }) {
           techId={techId}
           onClose={() => setMaterialsJob(null)}
           onSaved={loadAttention}
+        />
+      )}
+
+      {answering && (
+        <AskSheet
+          job={answering.job}
+          question={answering.question}
+          actor={actor}
+          onClose={() => setAnswering(null)}
+          onDone={loadAttention}
         />
       )}
 
@@ -580,6 +614,7 @@ function StopSheet({ stop, actor, declared, reviewState, onClose, onFinish }) {
 }
 
 const ATTN_TINT = {
+  ask:       '#818cf8',
   materials: '#d97706',
   time:      '#3b82f6',
   changes:   '#dc2626',

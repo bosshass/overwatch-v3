@@ -77,7 +77,15 @@ export async function fetchBoard() {
   // means we owe a price, a part not yet arrived means we owe an order.
   let waiting = {};
   const returning = jobs.filter(j => j.status === 'return_pending').map(j => j.id);
+  let lastDispoEarly = {};
   if (returning.length) {
+    const { data: rh } = await supabase
+      .from('job_history').select('job_id, snapshot, changed_at')
+      .eq('kind', 'disposition').in('job_id', returning)
+      .order('changed_at', { ascending: false });
+    for (const r of rh || []) {
+      if (!lastDispoEarly[r.job_id]) lastDispoEarly[r.job_id] = r.snapshot?.disposition || null;
+    }
     const [{ data: ests }, { data: prts }] = await Promise.all([
       supabase.from('estimates').select('job_id, status, amount')
         .in('job_id', returning).in('status', ['draft', 'sent']),
@@ -100,7 +108,11 @@ export async function fetchBoard() {
           ? { kind: 'parts', label: `${unordered} part${unordered === 1 ? '' : 's'} not ordered`, on: 'us' }
           : { kind: 'parts', label: `${outstanding.length} part${outstanding.length === 1 ? '' : 's'} on order`, on: 'them' };
       } else {
-        waiting[id] = { kind: 'ready', label: 'Ready to book', on: 'us' };
+        const d = lastDispoEarly[id];
+        waiting[id] =
+            d === 'unable'    ? { kind: 'failed', label: 'Could not complete — rebook', on: 'us' }
+          : d === 'cancelled' ? { kind: 'failed', label: 'No access — rebook', on: 'us' }
+          : { kind: 'ready', label: 'Ready to book', on: 'us' };
       }
     }
   }
@@ -131,6 +143,7 @@ export async function fetchBoard() {
   // Which visits the office still owes a look at. Derived per visit — a job
   // with two trips can have one cleared and one outstanding.
   const awaiting = ids.length ? await visitsAwaitingReview(ids) : {};
+  const asks = ids.length ? await openQuestions(ids) : {};
 
   // Dates come from v_job_schedule, which derives them from job_assignments.
   // jobs holds no dates: a job with JR on Monday and Trevor's return on Friday
@@ -150,6 +163,7 @@ export async function fetchBoard() {
     lastEntry: lastDispo[j.id] || null,
     waiting: waiting[j.id] || null,
     awaitingReview: awaiting[j.id] || null,
+    openAsks: asks[j.id] || null,
     ...(sched[j.id] || {
       first_scheduled: null, next_scheduled: null, last_scheduled: null,
       active_trips: 0, techs_assigned: 0,
@@ -272,8 +286,9 @@ export async function book(job, { techs = [], date, startTime = '08:00', actor }
       .eq('job_id', job.id)
       .eq('kind', 'disposition')
       .order('changed_at', { ascending: false });
+    const NEEDS_ANOTHER_TRIP = ['return', 'estimate', 'unable', 'cancelled'];
     const asked = (dh || []).find(
-      r => r.snapshot?.disposition === 'return' || r.snapshot?.disposition === 'estimate'
+      r => NEEDS_ANOTHER_TRIP.includes(r.snapshot?.disposition)
     );
     returnsFromAssignment = asked?.snapshot?.assignment_id || null;
   }
@@ -740,12 +755,24 @@ export async function fetchCustomerNotes(customerId) {
 // before they go out, so a card reading estimate_sent while it sits unpriced on
 // a desk makes "waiting on us" indistinguishable from "waiting on the customer".
 // estimate_sent gets written later, when it actually goes out.
+//
+// 'unable' and 'cancelled' USED TO MOVE NOTHING, and that was a dead end.
+//
+// The reasoning was that a failed visit is not really a "return". True, but
+// irrelevant: the card stayed on `scheduled` with hours logged against it, and
+// from there rescheduling is refused (work already happened) while booking a
+// return requires return_pending — which nothing had set. Every exit was shut.
+// A tech who could not get in left the job unbookable.
+//
+// return_pending means "work started, needs another trip". A visit that failed
+// needs another trip. That is the same lane, and WHY it is waiting is derived
+// from the disposition and shown on the card.
 const DISPOSITION_TARGET = {
   finished:  'good_to_go',
   return:    'return_pending',
   estimate:  'return_pending',
-  unable:    null,
-  cancelled: null,
+  unable:    'return_pending',
+  cancelled: 'return_pending',
 };
 
 export async function finishWork(job, {
@@ -1119,7 +1146,7 @@ export async function dispositionsFor(assignmentIds = []) {
   if (!assignmentIds.length) return {};
   const { data } = await supabase
     .from('job_history')
-    .select('snapshot, changed_by, changed_at')
+    .select('snapshot, notes, changed_by, changed_at')
     .eq('kind', 'disposition')
     .order('changed_at', { ascending: false });
 
@@ -1130,6 +1157,10 @@ export async function dispositionsFor(assignmentIds = []) {
     if (!id || !want.has(id) || out[id]) continue;
     out[id] = {
       disposition: r.snapshot?.disposition || null,
+      hours: r.snapshot?.hours ?? null,
+      // The note the tech typed, without the generated headline in front of
+      // it. The office is reading the report, not the app's summary of it.
+      body: String(r.notes || '').split('\n').slice(1).join('\n').trim() || null,
       by: r.changed_by || null,
       at: r.changed_at,
     };
@@ -1391,6 +1422,102 @@ export async function markPartNotBillable(partId, reason, note, actor) {
     billing_acknowledged_by: actor || null,
   }).eq('id', partId);
   return error ? { ok: false, reason: error.message } : { ok: true };
+}
+
+// ── Asking someone ───────────────────────────────────────────────────────────
+// ASSIGNING IS NOT SCHEDULING. They were the same act, and only one of them
+// existed: the only way to put a job in front of a person was to book them a
+// calendar slot they did not need.
+//
+// Half the work on a board is not a visit. It is "JR, is this under the
+// monitoring agreement?" or "Shana, find out who owns this building." No date,
+// no truck, no hours — a person, a question, and an answer that unblocks the
+// card. Booking a fake appointment to represent that is how a calendar stops
+// being true.
+//
+// Rides on the `questions` table, which already had this exact shape and no UI:
+// who asked, who was asked, what was asked, what came back.
+export async function askSomeone(jobId, techId, body, actor) {
+  const text = String(body || '').trim();
+  if (!techId) return { ok: false, reason: 'Pick who you are asking' };
+  if (!text)   return { ok: false, reason: 'Say what you need from them' };
+
+  const { data, error } = await supabase.from('questions').insert({
+    job_id: jobId,
+    asked_of: techId,
+    asked_by: actor || null,
+    body: text,
+  }).select('id').single();
+  if (error) return { ok: false, reason: error.message };
+
+  await supabase.from('job_history').insert({
+    job_id: jobId,
+    kind: 'note',
+    notes: `Asked: ${text}`,
+    changed_by: actor || null,
+    snapshot: { question_id: data.id, asked_of: techId },
+  });
+  return { ok: true, id: data.id };
+}
+
+// Answering can END the thread or HAND IT ON. Handing on is the common case —
+// Shana finds the owner, and now it is JR's call. That is a new question, not
+// an edit of this one, so the trail stays readable.
+export async function answerQuestion(id, answer, actor, { handTo = null, followUp = '' } = {}) {
+  const text = String(answer || '').trim();
+  if (!text) return { ok: false, reason: 'Write your answer' };
+
+  const { data: q } = await supabase
+    .from('questions').select('job_id').eq('id', id).single();
+
+  const { error } = await supabase.from('questions').update({
+    answer: text,
+    resolved_at: new Date().toISOString(),
+    resolved_by: actor || null,
+  }).eq('id', id);
+  if (error) return { ok: false, reason: error.message };
+
+  await supabase.from('job_history').insert({
+    job_id: q?.job_id || null,
+    kind: 'note',
+    notes: `Answered: ${text}`,
+    changed_by: actor || null,
+    snapshot: { question_id: id },
+  });
+
+  if (handTo) {
+    return askSomeone(q?.job_id, handTo, followUp || text, actor);
+  }
+  return { ok: true };
+}
+
+// Open asks for one person — what lands in their My Work.
+export async function myQuestions(techId) {
+  if (!techId) return [];
+  const { data } = await supabase
+    .from('questions')
+    .select(`
+      id, body, asked_by, created_at, job_id,
+      job:jobs ( id, status, issue, customer:customers ( id, name ) )
+    `)
+    .eq('asked_of', techId)
+    .is('resolved_at', null)
+    .order('created_at', { ascending: true });
+  return data || [];
+}
+
+// Open asks per job, for the board and the ticket.
+export async function openQuestions(jobIds = []) {
+  if (!jobIds.length) return {};
+  const { data } = await supabase
+    .from('questions')
+    .select('id, job_id, body, asked_by, asked_of, created_at, tech:techs!questions_asked_of_fkey ( id, name )')
+    .in('job_id', jobIds)
+    .is('resolved_at', null)
+    .order('created_at', { ascending: true });
+  const out = {};
+  for (const q of data || []) (out[q.job_id] ||= []).push(q);
+  return out;
 }
 
 // ── Office review ────────────────────────────────────────────────────────────

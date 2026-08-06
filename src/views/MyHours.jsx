@@ -49,7 +49,8 @@ export default function MyHours({ tech, job, actor, onClose, onSaved }) {
   const [customTo, setCustomTo] = useState(() => localDay(new Date()));
 
   const [rows, setRows] = useState([]);
-  const [draft, setDraft] = useState({});            // assignmentId → string
+  const [draft, setDraft] = useState({});
+  const [opened, setOpened] = useState({});   // rows the user chose to correct            // assignmentId → string
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -78,7 +79,7 @@ export default function MyHours({ tech, job, actor, onClose, onSaved }) {
       // entered.
       const seed = {};
       for (const r of data) if (r.hours != null) seed[r.assignmentId] = String(r.hours);
-      setDraft(seed);
+      setDraft(seed); setOpened({});
     } catch (e) {
       setErr(e.message);
     }
@@ -238,15 +239,27 @@ export default function MyHours({ tech, job, actor, onClose, onSaved }) {
                           </div>
                         </div>
 
+                        {/* Filed hours read as a NUMBER, not an open box.
+                            An input that is always open invites an accidental
+                            keystroke to look exactly like a correction. Empty
+                            rows stay open — there is nothing to protect. */}
                         {r.locked ? (
                           <span style={S.lockedVal}>
                             {r.hours == null ? '—' : `${r.hours}h`}
                           </span>
+                        ) : (r.hours != null && !opened[r.assignmentId]) ? (
+                          <button
+                            style={S.filed}
+                            onClick={() => setOpened(o => ({ ...o, [r.assignmentId]: true }))}
+                          >
+                            {val === '' ? '—' : `${val}h`} <span style={S.pencil}>✎</span>
+                          </button>
                         ) : (
                           <input
                             type="number" step="0.25" min="0" max="24"
                             inputMode="decimal"
                             placeholder="—"
+                            autoFocus={!!opened[r.assignmentId]}
                             style={{ ...S.input, ...(blank ? S.inputBlank : {}) }}
                             value={val}
                             onChange={e => setDraft(
@@ -254,7 +267,10 @@ export default function MyHours({ tech, job, actor, onClose, onSaved }) {
                             )}
                           />
                         )}
-                        <span style={S.hrs}>{r.locked ? '' : 'hrs'}</span>
+                        <span style={S.hrs}>
+                          {(r.locked || (r.hours != null && !opened[r.assignmentId]))
+                            ? '' : 'hrs'}
+                        </span>
                         {blank && !r.locked && <span style={S.warn}>⚠</span>}
                       </div>
                     );
@@ -347,6 +363,10 @@ const S = {
            border: '1px solid #1e293b', borderRadius: 7,
            padding: '8px 10px', fontSize: 15, textAlign: 'right' },
   inputBlank: { borderColor: '#78350f' },
+  filed: { width: 72, background: 'transparent', color: '#e2e8f0',
+           border: '1px solid transparent', borderRadius: 7, padding: '8px 10px',
+           fontSize: 15, textAlign: 'right', cursor: 'pointer' },
+  pencil: { color: '#475569', fontSize: 12 },
   lockedVal: { color: '#64748b', fontSize: 14, width: 72, textAlign: 'right' },
   hrs: { color: '#475569', fontSize: 11.5, width: 22 },
   warn: { color: '#f59e0b', fontSize: 13 },

@@ -27,20 +27,21 @@ const LANE_WORD = {
   closed:            'Closed',
 };
 
-export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule, onFinish, onReview }) {
+export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule, onFinish, onReview, onAsk }) {
   const [draft, setDraft] = useState(job);
   const [entries, setEntries] = useState([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [noteText, setNoteText] = useState('');
+  const [editing, setEditing] = useState(false);
   const [noteSaving, setNoteSaving] = useState(false);
   const [history, setHistory] = useState([]);
 
   const refreshNotes = () =>
     fetchTimeline(job.id).then(setHistory);
 
-  useEffect(() => { setDraft(job); setDirty(false); }, [job]);
+  useEffect(() => { setDraft(job); setDirty(false); setEditing(false); }, [job]);
   useEffect(() => {
     fetchTimeEntries(job.id).then(setEntries).catch(() => {});
     fetchTimeline(job.id).then(setHistory).catch(() => {});
@@ -120,7 +121,50 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
           </div>
         )}
 
-        {/* ── Fields ──────────────────────────────────────────────────── */}
+        {/* ── Fields ──────────────────────────────────────────────────────
+            READ-ONLY UNTIL SOMEONE ASKS TO EDIT.
+            Every field sat in an open input, which reads as "this is a form,
+            fill it in" on a record that is mostly settled — and makes an
+            accidental keystroke on a phone indistinguishable from a decision.
+            The pencil is the decision. */}
+        <div style={S.fieldsHead}>
+          <span style={S.label}>Details</span>
+          <button style={S.pencil} onClick={() => setEditing(e => !e)}>
+            {editing ? 'Done editing' : '✎ Edit'}
+          </button>
+        </div>
+
+        {!editing ? (
+          <div style={S.readout}>
+            <div style={S.ro}>
+              <span style={S.roLabel}>Priority</span>
+              <span style={S.roVal}>{draft.priority || '—'}</span>
+            </div>
+            <div style={S.ro}>
+              <span style={S.roLabel}>Estimated hours</span>
+              <span style={S.roVal}>
+                {draft.estimated_hours ?? '—'}{draft.estimated_hours != null && 'h'}
+              </span>
+            </div>
+            <div style={S.ro}>
+              <span style={S.roLabel}>Due date</span>
+              <span style={S.roVal}>
+                {draft.due_date || <em style={S.unset}>not set</em>}
+              </span>
+            </div>
+            <div style={S.roBlock}>
+              <span style={S.roLabel}>Issue</span>
+              <div style={S.roText}>{draft.issue || <em style={S.unset}>nothing recorded</em>}</div>
+            </div>
+            {draft.notes && (
+              <div style={S.roBlock}>
+                <span style={S.roLabel}>Internal notes</span>
+                <div style={S.roText}>{draft.notes}</div>
+              </div>
+            )}
+          </div>
+        ) : (
+        <>
         <label style={S.label}>Priority</label>
         <div style={S.chips}>
           {PRIORITIES.map(p => (
@@ -163,6 +207,8 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
         <textarea style={S.area} rows={2}
           placeholder="Pre-visit notes — access code, what to bring, heads up for the tech."
           value={draft.notes || ''} onChange={e => set('notes', e.target.value)} />
+        </>
+        )}
 
         {/* ── Note thread ───────────────────────────────────────────────── */}
         <div style={S.threadHead}>
@@ -251,6 +297,11 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
           )}
           {/* Review is a flag on the job, not a lane, so the way in is the
               card itself once a tech has dispositioned it. */}
+          {onAsk && (
+            <button style={S.ask} onClick={() => onAsk(draft)}>
+              Ask someone — no calendar event
+            </button>
+          )}
           {onReview && (
             <button style={S.review} onClick={() => onReview(draft)}>
               Office review
@@ -304,6 +355,9 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
 }
 
 const S = {
+  ask: { width: '100%', background: '#1e293b', color: '#a5b4fc', border: '1px solid #3b4a6b',
+         borderRadius: 9, padding: '11px', fontSize: 14, fontWeight: 600,
+         cursor: 'pointer', marginTop: 8 },
   review: { background: '#78350f', color: '#fed7aa', border: 0, borderRadius: 8,
             padding: '10px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' },
 
@@ -332,6 +386,20 @@ const S = {
          marginTop: 12, fontSize: 13 },
   gate: { background: '#1e293b', color: '#fbbf24', padding: '8px 12px', borderRadius: 8,
           marginTop: 12, fontSize: 12 },
+  fieldsHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                marginTop: 16 },
+  pencil: { background: 'transparent', color: '#94a3b8', border: '1px solid #1e293b',
+            borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' },
+  readout: { background: '#0f1b2e', border: '1px solid #1e293b', borderRadius: 9,
+             padding: '12px 14px', marginTop: 8 },
+  ro: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+        padding: '5px 0' },
+  roBlock: { padding: '8px 0 2px' },
+  roLabel: { color: '#64748b', fontSize: 12 },
+  roVal: { color: '#e2e8f0', fontSize: 13.5 },
+  roText: { color: '#e2e8f0', fontSize: 13.5, lineHeight: 1.5, marginTop: 4,
+            whiteSpace: 'pre-wrap' },
+  unset: { color: '#475569', fontStyle: 'normal' },
   label: { color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: .5,
            display: 'block', marginTop: 16, marginBottom: 6 },
   warn: { color: '#fbbf24', textTransform: 'none', letterSpacing: 0 },

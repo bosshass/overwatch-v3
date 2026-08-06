@@ -7,6 +7,7 @@ import SchedulerModal from './SchedulerModal';
 import FinishSheet from './FinishSheet';
 import OfficeReview from './OfficeReview';
 import MyHours from './MyHours';
+import AskSheet from './AskSheet';
 import MaterialsSheet from './MaterialsSheet';
 
 // ============================================================================
@@ -70,6 +71,14 @@ function Card({ job, onOpen }) {
       {/* Why a Returns card is sitting there. "Waiting on a price" and
           "waiting on a part" are different problems owned by different
           people, and the lane alone said neither. */}
+      {/* Waiting on a PERSON, not a visit. Highest thing on the card because
+          it is the reason nothing is moving. */}
+      {job.openAsks?.length > 0 && (
+        <div style={S.asked}>
+          Waiting on {job.openAsks.map(q => q.tech?.name || 'someone').join(', ')}
+        </div>
+      )}
+
       {job.waiting && (
         <div style={{ ...S.waiting, ...(job.waiting.on === 'us' ? S.waitingUs : {}) }}>
           {job.waiting.label}
@@ -142,6 +151,7 @@ export default function BoardView({ actor }) {
   const [reviewJob, setReviewJob] = useState(null);
   const [materialsJob, setMaterialsJob] = useState(null);
   const [hoursJob, setHoursJob] = useState(null);
+  const [askJob, setAskJob] = useState(null);
 
   const load = () =>
     fetchBoard()
@@ -200,6 +210,7 @@ export default function BoardView({ actor }) {
           onSchedule={j => { setOpenJob(null); setSchedJob(j); }}
           onFinish={j => { setOpenJob(null); setFinishJob(j); }}
           onReview={j => { setOpenJob(null); setReviewJob(j); }}
+          onAsk={j => { setOpenJob(null); setAskJob(j); }}
         />
       )}
 
@@ -229,6 +240,15 @@ export default function BoardView({ actor }) {
           actor={actor}
           onClose={() => setMaterialsJob(null)}
           onSaved={refresh}
+        />
+      )}
+
+      {askJob && (
+        <AskSheet
+          job={askJob}
+          actor={actor}
+          onClose={() => setAskJob(null)}
+          onDone={refresh}
         />
       )}
 
@@ -272,6 +292,9 @@ const S = {
                 borderRadius: 6, padding: '4px 8px', fontSize: 11.5,
                 fontWeight: 700, display: 'flex', justifyContent: 'space-between',
                 gap: 6, alignItems: 'center' },
+  asked: { marginTop: 6, background: '#1e293b', color: '#a5b4fc',
+           border: '1px solid #3b4a6b', borderRadius: 6, padding: '4px 8px',
+           fontSize: 11.5, fontWeight: 600 },
   waiting: { marginTop: 6, background: '#1e293b', color: '#94a3b8',
              borderRadius: 6, padding: '3px 8px', fontSize: 11.5 },
   waitingUs: { background: '#2a1a06', color: '#fcd34d' },
