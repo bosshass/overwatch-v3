@@ -1073,13 +1073,33 @@ export async function requestChanges(job, note, actor) {
 }
 
 // ── Capacity ─────────────────────────────────────────────────────────────────
-// 40 hours a week. Green to 80%, amber to 90%, red above.
-export function utilization(bookedHours, weeklyHours = 40) {
-  if (!weeklyHours) return null;                    // function techs carry no capacity
-  const pct = (Number(bookedHours) || 0) / weeklyHours;
+// Thresholds are HOURS on the tech row, not percentages of capacity.
+//
+// Percentages read tidy until JR. He is available 10 hours a week and should
+// go amber at 4 and red at 6 — 40% and 60%, not the 80/90 the field techs use.
+// He is the owner, and hours in the field are hours not spent running the
+// business, so his trigger points are deliberately not proportional to
+// anyone else's. Reading the two numbers off the row means the rule never has
+// to know why they differ.
+//
+// Austin, Trevor, Subs:  40 available, amber 32, red 36
+// JR:                    10 available, amber 4,  red 6
+// Shana, Sara:           no capacity — no bar
+export function utilization(bookedHours, tech) {
+  const cap = Number(tech?.weekly_hours) || 0;
+  if (!cap) return null;
+
+  const booked = Number(bookedHours) || 0;
+  const amber  = Number(tech?.amber_hours) || cap * 0.8;
+  const red    = Number(tech?.red_hours)   || cap * 0.9;
+
+  const state = booked > red ? 'red' : booked > amber ? 'amber' : 'green';
   return {
-    pct,
-    state: pct > 0.9 ? 'red' : pct > 0.8 ? 'amber' : 'green',
-    color: pct > 0.9 ? '#dc2626' : pct > 0.8 ? '#d97706' : '#14b8a6',
+    booked,
+    capacity: cap,
+    pct: booked / cap,
+    state,
+    color: state === 'red' ? '#dc2626' : state === 'amber' ? '#d97706' : '#14b8a6',
+    over: state === 'red' ? booked - red : 0,
   };
 }
