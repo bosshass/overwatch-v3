@@ -30,7 +30,13 @@
 //   { id, job_id, tech_id, day_number, scheduled_for, estimated_hours,
 //     is_complete, tech: { id, name, email, calendar_id, color } }
 
+// A row with event_state 'removed' is a tech who came OFF this day. The row and
+// its hours stay so the work still bills, but the person is not assigned any
+// more and must never render as though they are.
+export const isLive = a => a?.event_state !== 'removed';
+
 export function techsOn(assignments = []) {
+  assignments = (assignments || []).filter(isLive);
   const seen = new Map();
   for (const a of assignments) {
     const t = a.tech;

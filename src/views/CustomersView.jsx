@@ -8,14 +8,16 @@ import { supabase } from '../services/supabaseClient';
 //   - customers.id IS the DRH ID (ACEH0030). Permanent; never edited in the UI.
 //     broken trigger and v3 does not have the column at all.
 //   - merged_into rows are HIDDEN everywhere. Always filter is('merged_into', null).
-//   - Same name + different cs_number = a different physical location. Keep
+//   - CS numbers live in monitoring_accounts now, many per customer. Keep
 //     both. Do not offer to merge them and do not warn about them.
-//   - is_active means "has a monitoring subscription", NOT "is a real customer".
+//   - is_active = sales-active. is_monitored = has a monitoring account. Separate.
 //     It is labelled Monitoring here so nobody reads it as active/inactive again.
 // ============================================================================
 
 function Detail({ customer, onClose, onNewJob }) {
   const [jobs, setJobs] = useState([]);
+  const [past, setPast] = useState([]);
+  const [showPast, setShowPast] = useState(false);
 
   useEffect(() => {
     supabase.from('jobs')
@@ -25,6 +27,19 @@ function Detail({ customer, onClose, onNewJob }) {
       .then(({ data }) => setJobs(data || []));
   }, [customer.id]);
 
+  // Pre-Overwatch trips, from the calendar import. A closed bucket: written
+  // once, never appended to. Fetched only when asked for — a busy account can
+  // carry dozens of rows and nobody opening a customer card wants them all.
+  useEffect(() => {
+    if (!showPast) return;
+    supabase.from('customer_history')
+      .select('event_id, occurred_at, is_all_day, summary, issue, completed_by, minutes, invoice_number, trip_cluster_id')
+      .eq('customer_id', customer.id)
+      .order('occurred_at', { ascending: false })
+      .limit(50)
+      .then(({ data }) => setPast(data || []));
+  }, [customer.id, showPast]);
+
   return (
     <div style={S.backdrop} onClick={onClose}>
       <div style={S.sheet} onClick={e => e.stopPropagation()}>
@@ -33,7 +48,6 @@ function Detail({ customer, onClose, onNewJob }) {
             <div style={S.name}>{customer.name}</div>
             <div style={S.sub}>
               {customer.id}
-              {customer.cs_number && ` · CS ${customer.cs_number}`}
             </div>
           </div>
           <button style={S.x} onClick={onClose}>✕</button>
@@ -46,8 +60,8 @@ function Detail({ customer, onClose, onNewJob }) {
         )}
 
         <div style={S.badges}>
-          {customer.is_active && <span style={S.badgeOn}>Monitoring</span>}
-          {customer.is_cancelled && <span style={S.badgeOff}>Cancelled</span>}
+          {customer.is_monitored && <span style={S.badgeOn}>Monitoring</span>}
+          {customer.is_active === false && <span style={S.badgeOff}>Inactive</span>}
           {customer.customer_type && <span style={S.badge}>{customer.customer_type}</span>}
         </div>
 
@@ -55,7 +69,7 @@ function Detail({ customer, onClose, onNewJob }) {
 
         <div style={S.sectionHead}>Work history ({jobs.length})</div>
         {jobs.length === 0
-          ? <div style={S.none}>No jobs yet</div>
+          ? <div style={S.none}>No jobs in Overwatch yet</div>
           : jobs.map(j => (
               <div key={j.id} style={S.job}>
                 <span style={S.jobStatus}>{j.status}</span>
@@ -65,6 +79,28 @@ function Detail({ customer, onClose, onNewJob }) {
                 </span>
               </div>
             ))}
+
+        <button style={S.pastBtn} onClick={() => setShowPast(v => !v)}>
+          {showPast ? 'Hide earlier work' : 'Earlier work (before Overwatch)'}
+        </button>
+
+        {showPast && (past.length === 0
+          ? <div style={S.none}>Nothing on record</div>
+          : past.map(h => (
+              <div key={h.event_id} style={S.job}>
+                <span style={S.jobDate}>
+                  {new Date(h.occurred_at).toLocaleDateString(undefined,
+                    { month: 'short', day: 'numeric', year: '2-digit' })}
+                  {!h.is_all_day && ' ' + new Date(h.occurred_at)
+                    .toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                </span>
+                <span style={S.jobIssue}>{h.issue || h.summary || '—'}</span>
+                <span style={S.jobStatus}>
+                  {h.minutes ? `${(h.minutes / 60).toFixed(1)}h` : ''}
+                  {h.invoice_number ? ` · #${h.invoice_number}` : ''}
+                </span>
+              </div>
+            )))}
       </div>
     </div>
   );
@@ -91,7 +127,6 @@ export default function CustomersView({ onNewJob }) {
     return rows.filter(c =>
       (c.name || '').toLowerCase().includes(s) ||
       (c.id || '').toLowerCase().includes(s) ||
-      (c.cs_number || '').includes(s) ||
       (c.address || '').toLowerCase().includes(s) ||
       (c.phone || '').includes(s) ||
       // business_name and contact_name arrived with the 409-customer import.
@@ -125,11 +160,11 @@ export default function CustomersView({ onNewJob }) {
             </div>
             <div style={S.rowSub}>
               {c.address || 'No address'}
-              {/* has_cms_monitoring, NOT is_active. v9 conflated the two and
-                  this line inherited it — 369 of 390 customers are is_active,
-                  5 actually have monitoring, so every one of them was labelled
-                  as a monitoring account. */}
-              {c.has_cms_monitoring && <span style={S.mon}> · monitoring</span>}
+              {/* is_monitored, NOT is_active. They are independent columns:
+                  is_active is sales-active, is_monitored means the customer has
+                  at least one row in monitoring_accounts. v9 conflated them and
+                  mislabelled ~364 customers. */}
+              {c.is_monitored && <span style={S.mon}> · monitoring</span>}
             </div>
           </button>
         ))}
@@ -182,6 +217,8 @@ const S = {
               borderRadius: 12 },
   newJob: { width: '100%', marginTop: 16, background: '#22c55e', color: '#06240f', border: 0,
             borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 700, cursor: 'pointer' },
+  pastBtn: { marginTop: 14, width: '100%', padding: '8px 10px', background: 'transparent',
+    border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 12, cursor: 'pointer' },
   sectionHead: { color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: .5,
                  marginTop: 24, marginBottom: 8, borderTop: '1px solid #1e293b', paddingTop: 14 },
   job: { display: 'flex', gap: 8, alignItems: 'baseline', padding: '6px 0', fontSize: 12 },

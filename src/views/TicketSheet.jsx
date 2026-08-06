@@ -201,7 +201,7 @@ export default function TicketSheet({ job, actor, onClose, onChanged, onSchedule
           ? <div style={S.none}>Nobody on it yet</div>
           : (
             <div style={S.techList}>
-              {draft.assignments.map(a => (
+              {draft.assignments.filter(a => a.event_state !== 'removed').map(a => (
                 <div key={a.id} style={S.techRow}>
                   <span style={{ ...S.dot, background: a.tech?.color || '#64748b' }} />
                   <span style={S.techName}>{a.tech?.name}</span>
