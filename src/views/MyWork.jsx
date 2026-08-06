@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchMyDay, addNote, fetchNotes } from '../services/jobs';
+import { fetchMyDay, addNote, fetchNotes, dispositionsFor } from '../services/jobs';
 import { supabase } from '../services/supabaseClient';
 import { fetchEvents, localDay } from '../services/calendar';
 import FinishSheet from './FinishSheet';
@@ -41,6 +41,8 @@ export default function MyWork({ actor }) {
   const [finishStop, setFinishStop] = useState(null);
   const [materialsJob, setMaterialsJob] = useState(null);
   const [hoursOpen, setHoursOpen] = useState(false);
+  // assignmentId -> what was declared. A stop that has one cannot declare again.
+  const [declared, setDeclared] = useState({});
 
   // ── The tail ─────────────────────────────────────────────────────────────
   // Work does not end when the tech taps Done. Hours get entered later, often
@@ -74,7 +76,9 @@ export default function MyWork({ actor }) {
     if (!techId) return;
     setLoading(true); setErr(null);
     try {
-      setStops(await fetchMyDay(techId, day));
+      const list = await fetchMyDay(techId, day);
+      setStops(list);
+      setDeclared(await dispositionsFor(list.map(s2 => s2.id)));
     } catch (e) {
       setErr(e.message);
     }
@@ -347,6 +351,7 @@ export default function MyWork({ actor }) {
         <StopSheet
           stop={openStop}
           actor={actor}
+          declared={declared[openStop.id] || null}
           onClose={() => setOpenStop(null)}
           onFinish={() => { const s = openStop; setOpenStop(null); setFinishStop(s); }}
         />
@@ -400,8 +405,19 @@ const shortName = who => String(who || 'system').split('@')[0];
 // ============================================================================
 // StopSheet — one stop. Call, directions, notes, disposition.
 // ============================================================================
-function StopSheet({ stop, actor, onClose, onFinish }) {
+const DECLARED_WORD = {
+  finished:  'Work completed',
+  return:    'Return visit',
+  estimate:  'Estimate needed',
+  unable:    'Unable to complete',
+  cancelled: 'Cancelled / no access',
+};
+
+function StopSheet({ stop, actor, declared, onClose, onFinish }) {
   const job = stop.job || {};
+  // Set to 'changes' when the office sends it back. That is the ONLY route to
+  // declaring a second time.
+  const reviewState = job.review_state || null;
   const c = job.customer || {};
 
   const [notes, setNotes] = useState([]);
@@ -515,14 +531,42 @@ function StopSheet({ stop, actor, onClose, onFinish }) {
               ))}
         </div>
 
-        {/* ── Disposition ──────────────────────────────────────────────── */}
-        <button style={T.finish} onClick={onFinish}>
-          Declare disposition — log hours
-        </button>
-        <div style={T.foot}>
-          Finished, or needs another trip. Hours go to Accounting; what gets
-          billed is decided there, not here.
-        </div>
+        {/* ── Disposition ──────────────────────────────────────────────────
+            ONE per visit. Declaring twice wrote two disposition entries and
+            two status moves for the same trip, and the card only ever showed
+            the last — so the first quietly stopped existing.
+
+            The way back is the office asking for changes, not the tech
+            declaring over the top of himself. */}
+        {declared && reviewState !== 'changes' ? (
+          <>
+            <div style={T.declared}>
+              <div style={T.declaredWord}>
+                {DECLARED_WORD[declared.disposition] || declared.disposition}
+              </div>
+              <div style={T.declaredMeta}>
+                {shortName(declared.by)} ·{' '}
+                {new Date(declared.at).toLocaleString(undefined,
+                  { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              </div>
+            </div>
+            <div style={T.foot}>
+              This visit is already closed out. If it needs changing, the office
+              can send it back — you'll see it in Needs your attention.
+            </div>
+          </>
+        ) : (
+          <>
+            <button style={T.finish} onClick={onFinish}>
+              {declared ? 'Redo disposition' : 'Declare disposition'}
+            </button>
+            <div style={T.foot}>
+              {declared
+                ? 'The office asked for changes on this one. Declaring again replaces what was recorded.'
+                : 'Finished, or needs another trip. Hours are entered later, in My hours.'}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -657,6 +701,10 @@ const T = {
   noteMeta: { color: '#475569', fontSize: 10, marginTop: 5 },
   noteBody: { color: '#e2e8f0', fontSize: 14, lineHeight: 1.45, whiteSpace: 'pre-wrap' },
 
+  declared: { background: '#122a2c', border: '1px solid #14b8a6', borderRadius: 10,
+              padding: '14px 16px', marginTop: 4 },
+  declaredWord: { color: '#7fd8cd', fontSize: 15, fontWeight: 700 },
+  declaredMeta: { color: '#64748b', fontSize: 12, marginTop: 4 },
   finish: { width: '100%', marginTop: 22, background: '#14b8a6', color: '#04201d', border: 0,
             borderRadius: 10, padding: '14px', fontSize: 15, fontWeight: 800, cursor: 'pointer' },
   foot: { color: '#475569', fontSize: 10, marginTop: 9, lineHeight: 1.45 },

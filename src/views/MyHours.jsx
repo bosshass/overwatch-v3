@@ -232,14 +232,16 @@ export default function MyHours({ tech, job, actor, onClose, onSaved }) {
                           <div style={S.meta}>
                             {r.booked ? `${r.booked}h booked` : 'no estimate'}
                             {!r.isComplete && ' · not closed out'}
-                            {r.locked && ' · billed'}
+                            {r.locked && ` · ${r.lockReason || 'locked'}`}
                             {r.enteredBy && r.enteredBy !== actor
                               && ` · entered by ${r.enteredBy}`}
                           </div>
                         </div>
 
                         {r.locked ? (
-                          <span style={S.lockedVal}>{r.hours}h</span>
+                          <span style={S.lockedVal}>
+                            {r.hours == null ? '—' : `${r.hours}h`}
+                          </span>
                         ) : (
                           <input
                             type="number" step="0.25" min="0" max="24"

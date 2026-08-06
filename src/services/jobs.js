@@ -401,7 +401,7 @@ export async function fetchMyDay(techId, dayISO) {
       id, job_id, tech_id, day_number, scheduled_for, estimated_hours,
       is_complete, actual_hours, calendar_event_id,
       job:jobs (
-        id, status, issue, priority, estimated_hours, due_date, customer_id,
+        id, status, review_state, issue, priority, estimated_hours, due_date, customer_id,
         customer:customers ( id, name, address, city, state, zip, phone )
       )
     `)
@@ -933,7 +933,7 @@ export async function fetchMyHours(techId, fromISO, toISO) {
     .from('job_assignments')
     .select(`
       id, job_id, scheduled_for, estimated_hours, is_complete, event_state,
-      job:jobs ( id, status, customer_id, customer:customers ( id, name ) )
+      job:jobs ( id, status, review_state, customer_id, customer:customers ( id, name ) )
     `)
     .eq('tech_id', techId)
     .neq('event_state', 'removed')
@@ -963,10 +963,16 @@ export async function fetchMyHours(techId, fromISO, toISO) {
       booked: Number(a.estimated_hours) || 0,
       isComplete: !!a.is_complete,
       entryId: entry?.id || null,
-      // Already billed means Accounting has acted on this number. Editing it
-      // afterwards silently changes what an invoice was based on, so the row
-      // goes read-only rather than pretending the edit is free.
-      locked: !!entry?.billed,
+      // Locked once somebody downstream has acted on the number.
+      //
+      // Billed is obvious — an invoice was built on it. Approved is the same
+      // problem one step earlier: the office looked at these hours and signed
+      // them off, and a later edit changes what was approved without anyone
+      // being told. Before either, the tech owns their own typo.
+      locked: !!entry?.billed || a.job?.review_state === 'approved',
+      lockReason: entry?.billed ? 'billed'
+                : a.job?.review_state === 'approved' ? 'approved by the office'
+                : null,
       enteredBy: entry?.entered_by || null,
       hours: entry ? Number(entry.total_minutes || 0) / 60 : null,
     };
@@ -988,7 +994,7 @@ export async function fetchJobHours(jobId) {
     .select(`
       id, job_id, scheduled_for, estimated_hours, is_complete, event_state,
       tech:techs ( id, name, email ),
-      job:jobs ( id, customer_id, customer:customers ( id, name ) )
+      job:jobs ( id, review_state, customer_id, customer:customers ( id, name ) )
     `)
     .eq('job_id', jobId)
     .neq('event_state', 'removed')
@@ -1018,11 +1024,46 @@ export async function fetchJobHours(jobId) {
       booked: Number(a.estimated_hours) || 0,
       isComplete: !!a.is_complete,
       entryId: entry?.id || null,
-      locked: !!entry?.billed,
+      locked: !!entry?.billed || a.job?.review_state === 'approved',
+      lockReason: entry?.billed ? 'billed'
+                : a.job?.review_state === 'approved' ? 'approved by the office'
+                : null,
       enteredBy: entry?.entered_by || null,
       hours: entry ? Number(entry.total_minutes || 0) / 60 : null,
     };
   });
+}
+
+// Which of these trips has already been dispositioned, and what was said.
+//
+// A tech could declare "work completed", reopen the same stop and declare
+// "return visit" — two disposition entries for one visit, two status moves,
+// and no way to tell which the office is looking at. The card only ever showed
+// the LAST one, so the first silently stopped existing.
+//
+// Read from job_history rather than a flag on the assignment: the entry is
+// already written there carrying its assignment_id, and a flag would be a
+// second copy of a fact that already exists.
+export async function dispositionsFor(assignmentIds = []) {
+  if (!assignmentIds.length) return {};
+  const { data } = await supabase
+    .from('job_history')
+    .select('snapshot, changed_by, changed_at')
+    .eq('kind', 'disposition')
+    .order('changed_at', { ascending: false });
+
+  const want = new Set(assignmentIds);
+  const out = {};
+  for (const r of data || []) {
+    const id = r.snapshot?.assignment_id;
+    if (!id || !want.has(id) || out[id]) continue;
+    out[id] = {
+      disposition: r.snapshot?.disposition || null,
+      by: r.changed_by || null,
+      at: r.changed_at,
+    };
+  }
+  return out;
 }
 
 // Save the week. Blanks are SKIPPED, not zeroed — an empty box means "not filed
@@ -1037,6 +1078,8 @@ export async function saveHours(rows, { actor, techName, techEmail } = {}) {
   const failed = [];
 
   for (const r of rows || []) {
+    // Belt and braces: the screen hides these, but a stale page holding rows
+    // from before an approval must not be able to write them.
     if (r.locked) continue;
 
     const raw = String(r.hours ?? '').trim();
